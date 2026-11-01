@@ -31,6 +31,7 @@ const player = new Player({ osd });
 // ---------- focus ring ----------
 function setFocus(c, { scroll = true } = {}) {
   state.focus = c;
+  for (const e of document.querySelectorAll('.focused')) if (e !== c?.el) e.classList.remove('focused');
   if (!c) { ring.hidden = true; return; }
   // Scroll first, then measure: the ring is fixed-position and must follow the post-scroll rect.
   if (state.view !== 'portal') { c.el.classList.add('focused'); if (scroll) c.el.scrollIntoView({ block: 'nearest', inline: 'center' }); }
