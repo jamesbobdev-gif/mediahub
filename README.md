@@ -26,9 +26,14 @@ npm start         # http://127.0.0.1:8787  (shell at /, status at /api/status)
 ```
 
 Open http://127.0.0.1:8787 in a browser. Desktop keys: arrows move, Enter opens, Esc back,
-`M` toggles cursor mode, Space starts playback, `I` shows the stats HUD. The first tile opens the
-demo portal (fixed header, hero slider, cookie wall, in-grid ad slots, late interstitial,
-pop-under on click, window-level infinite scroll, a player page) so every layer can be checked.
+`M` toggles cursor mode, `H` hides the element under the cursor and saves the rule, Space starts
+playback, `I` shows the stats HUD. The home screen is rows: Continue watching, Sources, Movies,
+Series, Episodes. The Demo Portal tile opens a deliberately messy page (fixed header, hero slider,
+cookie wall, in-grid ad slots, late interstitial, pop-under on click, window-level infinite
+scroll, a player page) so every layer can be checked. A second demo source ingests a static HTML
+list to show cross-provider merging.
+
+On Windows PowerShell 5.1 use `;` rather than `&&` to chain commands.
 
 ## How it works
 
@@ -87,32 +92,42 @@ Rules are data, per source, in `config/sources.json`:
 * **Infinite scroll** in a fixed-height frame: the configured `scrollRoot` becomes the real
   scroller, `window.scrollY`/`scrollTo`/scroll events are forwarded to it, and focus keeps the
   current row at 40% from the top so the sentinel is reached early.
+* **Rule inspector**: on the TV, point the cursor (or focus) at a noisy element and press the
+  `menu` key (`H` on desktop). The element is hidden immediately and its selector is written into
+  that source's `css` rules through `PATCH /api/sources/<id>/rules`. Config is hot-reloaded, so
+  rules written from the couch apply to every later page load without a restart.
 
 ### 4. Ingestion
 
-* `server/ingest/adapters.js`: one generic JSON adapter driven by the manifest
-  (`feed.url`, `feed.items`, `feed.map`, `feed.next`), with jittered backoff on 429/5xx and a
-  per-source minimum interval. The scheduler runs sources concurrently with per-source
-  concurrency of one.
+* `server/ingest/adapters.js`: a generic JSON adapter driven by the manifest
+  (`feed.url`, `feed.items`, `feed.map`, `feed.next`), and an HTML list adapter for portals
+  without a feed (`feed.type: "html"`, `feed.itemRegex` with named groups `title`, `url`,
+  `image`, `year`, `kind`, optional `feed.nextRegex` with group `url`). Both use jittered backoff
+  on 429/5xx and a per-source minimum interval. The scheduler runs sources concurrently with
+  per-source concurrency of one.
 * `normalise.js`: NFKC + diacritics folding → bracket tags dropped (trailing year kept) →
   separators → `SxxEyy`/`Season N` extracted → release tokens stripped → `titleKey` without
   articles. Items merge on `(titleKey, year, kind)` or Jaro-Winkler ≥ 0.92 within the same
   kind/year.
-* `catalog.js`: `node:sqlite` in WAL mode with `synchronous = NORMAL`; every change bumps a
-  sequence so the TV pulls `/api/catalog?since=<cursor>` with `If-None-Match` and pays zero
-  writes when nothing changed.
+* `catalog.js`: `node:sqlite` in WAL mode with `synchronous = NORMAL`. The sequence only moves
+  when a source link, artwork, or missing year actually changes, so re-ingesting an unchanged
+  feed sends nothing to the TV: it pulls `/api/catalog?since=<cursor>` with `If-None-Match` and
+  pays zero writes.
 * `artwork.js`: content-addressed files, downloads batched and written in bursts (flash
   controllers prefer this), fixed byte budget with an LRU sweep that runs only when idle. If
   `sharp` is installed artwork is pre-resized to 300x450 and 600x900 WebP; otherwise originals
   are stored.
 * TV side (`shell/js/catalog.js`): IndexedDB mirror plus a 64 MB in-memory LRU for decoded
-  artwork, evicted by last-focus time so the row being scanned never thrashes.
+  artwork, evicted by last-focus time so the row being scanned never thrashes. Resume positions
+  (`progress.js`) live in localStorage and feed the Continue watching row; playback resumes
+  automatically and finished titles drop off the row.
 
 ## Adding a source
 
 Add an entry to `config/sources.json` with `origin` (the portal), a `feed` block describing its
-JSON endpoint, and `rules`. Restart. Hot-reloading rules without a store resubmission is just
-serving a new `sources.json`; the TV app itself never changes.
+JSON endpoint or HTML list page, and `rules`. Save the file: the hub watches `config/` and
+reloads sources and filters in place, scheduling new sources within a second. The TV app itself
+never changes.
 
 Only point this at sources you are entitled to access and scrape.
 

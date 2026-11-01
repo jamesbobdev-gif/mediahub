@@ -4,6 +4,7 @@ import { VirtualCursor } from './cursor.js';
 import { Player } from './player.js';
 import { CatalogCache, ArtworkLru } from './catalog.js';
 import { PortalFrame } from './portal.js';
+import { progress } from './progress.js';
 
 const $ = (s) => document.querySelector(s);
 const views = { home: $('#view-home'), portal: $('#view-portal') };
@@ -14,6 +15,8 @@ const state = {
   mode: 'spatial',         // 'spatial' | 'cursor'
   focus: null,             // {el,x,y,w,h} in shell coordinates
   sources: [],
+  portalDepth: 0, goingBack: false, portalSource: null,
+  playKey: null, playTitle: null, playItemId: null,
   metrics: { focus: [], seek: [] },
 };
 
@@ -28,7 +31,7 @@ function setFocus(c, { scroll = true } = {}) {
   state.focus = c;
   if (!c) { ring.hidden = true; return; }
   // Scroll first, then measure: the ring is fixed-position and must follow the post-scroll rect.
-  if (state.view === 'home') { c.el.classList.add('focused'); if (scroll) c.el.scrollIntoView({ block: 'center', inline: 'nearest' }); }
+  if (state.view === 'home') { c.el.classList.add('focused'); if (scroll) c.el.scrollIntoView({ block: 'center', inline: 'center' }); }
   else if (scroll) portal.hub?.scrollIntoAnchor(c.el);
   drawRing(c);
 }
@@ -47,7 +50,6 @@ function currentCandidates() {
   return portal.candidates();
 }
 function refreshFocus() {
-  // Rects move after scroll/mutation; re-find the same element and redraw.
   const cands = currentCandidates();
   const same = state.focus && refind(cands, state.focus.el);
   if (same) setFocus(same, { scroll: false });
@@ -65,70 +67,81 @@ function move(dir) {
   requestAnimationFrame(() => { state.metrics.focus.push(performance.now() - t0); if (state.metrics.focus.length > 200) state.metrics.focus.shift(); });
 }
 
-// ---------- home view ----------
+// ---------- home view: rows ----------
+function tile({ id, title, sub, portal: portalUrl, key, pct, icon }) {
+  const t = document.createElement('div');
+  t.className = 'tile' + (icon ? ' source' : ''); t.dataset.focusable = '';
+  if (id) t.dataset.id = id; if (portalUrl) t.dataset.portal = portalUrl; if (key) t.dataset.key = key;
+  t.innerHTML = `<div class="poster">${icon ? `<span>${icon}</span>` : ''}${pct != null ? '<div class="bar"><i></i></div>' : ''}</div><div class="meta"><div class="title"></div><div class="sub"></div></div>`;
+  t.querySelector('.title').textContent = title; t.querySelector('.sub').textContent = sub || '';
+  if (pct != null) t.querySelector('.bar i').style.width = `${Math.round(pct * 100)}%`;
+  return t;
+}
+function row(title, tiles) {
+  if (!tiles.length) return null;
+  const s = document.createElement('section'); s.className = 'row';
+  s.innerHTML = `<h2></h2><div class="row-tiles"></div>`;
+  s.querySelector('h2').textContent = title;
+  const wrap = s.querySelector('.row-tiles'); for (const t of tiles) wrap.appendChild(t);
+  return s;
+}
 function renderHome() {
-  const grid = $('#grid');
-  grid.innerHTML = '';
+  const rows = $('#rows'); rows.innerHTML = '';
   const items = catalog.list();
   $('#home-count').textContent = `${items.length} titles · ${state.sources.length} sources`;
-  for (const it of items) {
-    const tile = document.createElement('div');
-    tile.className = 'tile'; tile.dataset.focusable = ''; tile.dataset.id = it.id;
-    tile.innerHTML = `<div class="poster"></div><div class="meta"><div class="title"></div><div class="sub"></div></div>`;
-    tile.querySelector('.title').textContent = it.title;
-    tile.querySelector('.sub').textContent = [it.year, it.kind, it.sources.map((s) => s.sourceId).join(', ')].filter(Boolean).join(' · ');
-    grid.appendChild(tile);
-  }
-  for (const s of state.sources) {
-    const b = document.createElement('div');
-    b.className = 'tile source'; b.dataset.focusable = ''; b.dataset.portal = s.home;
-    b.innerHTML = `<div class="poster"><span>⌂</span></div><div class="meta"><div class="title"></div><div class="sub">open portal</div></div>`;
-    b.querySelector('.title').textContent = s.name;
-    grid.prepend(b);
-  }
+  const sub = (it) => [it.year, it.kind === 'episode' && it.season != null ? `S${it.season}E${it.episode ?? '?'}` : null, it.sources.map((s) => s.sourceId).join(', ')].filter(Boolean).join(' · ');
+  const byKind = (k) => items.filter((i) => i.kind === k).map((it) => tile({ id: it.id, title: it.title, sub: sub(it) }));
+  const cont = progress.list().map((p) => tile({ key: p.key, id: p.itemId, portal: p.portalUrl, title: p.title, sub: `${fmtMin(p.d - p.t)} left`, pct: p.t / p.d }));
+  const srcs = state.sources.map((s) => tile({ portal: s.home, title: s.name, sub: 'open portal', icon: '⌂' }));
+  for (const r of [row('Continue watching', cont), row('Sources', srcs), row('Movies', byKind('movie')), row('Series', byKind('series')), row('Episodes', byKind('episode'))]) if (r) rows.appendChild(r);
   lazyArtwork();
 }
+const fmtMin = (s) => `${Math.max(1, Math.round(s / 60))} min`;
 let artObserver;
 function lazyArtwork() {
   artObserver?.disconnect();
-  // Only the visible grid plus two rows of lookahead is decoded (rootMargin).
   artObserver = new IntersectionObserver((entries) => {
     for (const e of entries) {
       if (!e.isIntersecting) continue;
-      const tile = e.target; artObserver.unobserve(tile);
-      const it = catalog.items.get(tile.dataset.id); if (!it) continue;
+      const t = e.target; artObserver.unobserve(t);
+      const it = catalog.items.get(t.dataset.id); if (!it) continue;
       const url = catalog.artworkUrl(it); if (!url) continue;
-      art.get(url).then((obj) => { tile.querySelector('.poster').style.backgroundImage = `url(${obj})`; }).catch(() => {});
+      art.get(url).then((obj) => { t.querySelector('.poster').style.backgroundImage = `url(${obj})`; }).catch(() => {});
     }
-  }, { root: $('#view-home'), rootMargin: '600px 0px' });
-  for (const t of $('#grid').querySelectorAll('.tile[data-id]')) artObserver.observe(t);
+  }, { root: $('#view-home'), rootMargin: '400px 600px' });
+  for (const t of $('#rows').querySelectorAll('.tile[data-id]')) artObserver.observe(t);
+}
+function portalPathFor(sourceId, absUrl) {
+  const def = state.sources.find((s) => s.id === sourceId);
+  const u = new URL(absUrl);
+  const base = def?.origin ? new URL(def.origin).pathname.replace(/\/$/, '') : '';
+  const path = base && u.pathname.startsWith(base) ? u.pathname.slice(base.length) : u.pathname;
+  return `/p/${sourceId}${path}${u.search}`;
 }
 function homeSelect() {
   const el = state.focus?.el; if (!el) return;
+  if (el.dataset.key) { const p = progress.get(el.dataset.key); if (p) return openPortal(p.portalUrl, { key: el.dataset.key, title: p.title, itemId: p.itemId }); }
   if (el.dataset.portal) return openPortal(el.dataset.portal);
   const it = catalog.items.get(el.dataset.id);
   const src = it?.sources.find((s) => s.itemUrl);
   if (!src) return say('No source URL for this title');
-  const def = state.sources.find((s) => s.id === src.sourceId);
-  const u = new URL(src.itemUrl);
-  const origin = def?.origin ? new URL(def.origin) : null;
-  const base = origin ? origin.pathname.replace(/\/$/, '') : '';
-  const path = base && u.pathname.startsWith(base) ? u.pathname.slice(base.length) : u.pathname;
-  openPortal(`/p/${src.sourceId}${path}${u.search}`);
+  openPortal(portalPathFor(src.sourceId, src.itemUrl), { key: it.id, title: it.title, itemId: it.id });
 }
 
 // ---------- portal view ----------
-function openPortal(url) {
+function openPortal(url, { key = null, title = null, itemId = null } = {}) {
+  state.playKey = key; state.playTitle = title; state.playItemId = itemId;
+  state.portalDepth = 0; state.goingBack = false;
+  state.portalSource = (url.match(/^\/p\/([^/]+)/) || [])[1] || null;
   showView('portal');
   portal.load(url);
   say('Loading portal…');
 }
 portal.onReady = () => {
+  if (state.view !== 'portal' || portal.frame.src === 'about:blank') return;
   say('');
-  const hub = portal.hub;
-  if (!hub) { say('Portal is not same-origin; injection failed'); return; }
+  if (!portal.hub) { say('Portal is not same-origin; injection failed'); return; }
   setTimeout(refreshFocus, 50);
-  // Poll for a late-mounted player and for layout churn; cheap because rects are cached in-frame.
   clearInterval(state.portalTick);
   state.portalTick = setInterval(() => { if (state.view === 'portal' && !player.active) refreshFocus(); }, 500);
 };
@@ -144,20 +157,47 @@ function portalSelect() {
   hub.activate(el);
   setTimeout(refreshFocus, 150);
 }
+function playbackKey() {
+  if (state.playKey) return state.playKey;
+  const w = portal.win; try { return `${state.portalSource}:${w.location.pathname}${w.location.search}`; } catch { return null; }
+}
 function startPlayback(video) {
   video = video || portal.hub?.findVideo();
   if (!video) return say('No player on this page');
-  player.attach(video);
+  const key = playbackKey();
+  const saved = key && progress.get(key);
   player.onEnd = () => stopPlayback();
+  player.onProgress = (t, d) => {
+    let title = state.playTitle; try { title = title || portal.frame.contentDocument.title; } catch {}
+    let portalUrl; try { const l = portal.win.location; portalUrl = l.pathname + l.search; } catch {}
+    progress.save(key, { t, d, title, portalUrl, itemId: state.playItemId });
+  };
+  player.attach(video, { resumeAt: saved ? saved.t : 0 });
   ring.hidden = true;
-  say('');
+  say(saved ? `Resuming at ${fmtTime(saved.t)}` : '');
 }
+const fmtTime = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 function stopPlayback() { player.detach(); refreshFocus(); }
+
+/** Rule inspector: hide the element under the cursor (or the focused one) and persist its selector. */
+async function inspectHide() {
+  const hub = portal.hub; if (!hub || !state.portalSource) return;
+  let el;
+  if (state.mode === 'cursor') { const p = portal.toFrame(cursor.x, cursor.y); el = hub.elementAt(p.x, p.y); }
+  else el = state.focus?.el;
+  if (!el) return say('Nothing under the cursor');
+  const selector = hub.hideUser(el);
+  hub.invalidate(); refreshFocus();
+  try {
+    const r = await fetch(`/api/sources/${encodeURIComponent(state.portalSource)}/rules`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ css: [selector] }) });
+    say(r.ok ? `Hidden and saved: ${selector}` : `Hidden (save failed: HTTP ${r.status})`);
+  } catch (e) { say(`Hidden (save failed: ${e.message})`); }
+}
 
 function showView(name) {
   state.view = name;
   for (const [k, v] of Object.entries(views)) v.hidden = k !== name;
-  if (name === 'home') { clearInterval(state.portalTick); portal.frame.src = 'about:blank'; cursor.hide(); state.mode = 'spatial'; }
+  if (name === 'home') { clearInterval(state.portalTick); portal.frame.src = 'about:blank'; cursor.hide(); state.mode = 'spatial'; renderHome(); }
   refreshFocus();
 }
 function setMode(mode) {
@@ -165,11 +205,15 @@ function setMode(mode) {
   if (mode === 'cursor') { cursor.show(); ring.hidden = true; say('Cursor mode'); }
   else { cursor.hide(); refreshFocus(); say('Navigation mode'); }
 }
-function say(msg) { toast.textContent = msg; toast.hidden = !msg; clearTimeout(say.t); if (msg) say.t = setTimeout(() => { toast.hidden = true; }, 2000); }
+function say(msg) { toast.textContent = msg; toast.hidden = !msg; clearTimeout(say.t); if (msg) say.t = setTimeout(() => { toast.hidden = true; }, 2500); }
 
 // ---------- intent dispatch ----------
 function dispatch(intent, { repeat, phase }) {
-  if (phase === 'up') { if (state.mode === 'cursor' && ['up', 'down', 'left', 'right'].includes(intent)) cursor.release(intent); if (player.active && (intent === 'left' || intent === 'right')) player.commitSeek(); return; }
+  if (phase === 'up') {
+    if (state.mode === 'cursor' && ['up', 'down', 'left', 'right'].includes(intent)) cursor.release(intent);
+    if (player.active && (intent === 'left' || intent === 'right')) player.commitSeek();
+    return;
+  }
   if (player.active) {
     switch (intent) {
       case 'left': return player.nudge(-1, repeat);
@@ -187,11 +231,14 @@ function dispatch(intent, { repeat, phase }) {
     case 'up': case 'down': case 'left': case 'right': return move(intent);
     case 'select': return state.view === 'home' ? homeSelect() : portalSelect();
     case 'back':
-      if (state.view === 'portal') { const w = portal.win; if (w && w.history.length > 1 && !repeat && state.portalDepth > 0) { state.portalDepth--; w.history.back(); } else showView('home'); }
+      if (repeat) return;
+      if (state.view !== 'portal') return;
+      if (state.portalDepth > 1) { state.goingBack = true; try { portal.win.history.back(); } catch { showView('home'); } }
+      else showView('home');
       return;
     case 'mode': case 'cursor': if (state.view === 'portal') setMode(state.mode === 'cursor' ? 'spatial' : 'cursor'); return;
     case 'play': case 'playpause': if (state.view === 'portal') startPlayback(); return;
-    case 'menu': return showView('home');
+    case 'menu': if (state.view === 'portal') inspectHide(); return;
     case 'info': return toggleHud();
     default: return;
   }
@@ -201,7 +248,7 @@ function toggleHud() {
   if (hud.hidden) return;
   const p = (arr) => arr.length ? [50, 95].map((q) => `p${q}=${arr.slice().sort((a, b) => a - b)[Math.floor((q / 100) * (arr.length - 1))].toFixed(1)}ms`).join(' ') : 'n/a';
   const dec = portal.hub?.decisions || [];
-  hud.textContent = `platform=${PLATFORM} view=${state.view} mode=${state.mode}\nfocus latency ${p(state.metrics.focus)}\nportal decisions: ${dec.length} (${dec.filter((d) => d.kind === 'hide').length} hidden, ${dec.filter((d) => d.kind !== 'hide').length} popups)\n` + dec.slice(-8).map((d) => `  ${d.kind} ${d.reason || ''} ${d.tag || ''} ${d.cls || d.url || ''}`).join('\n');
+  hud.textContent = `platform=${PLATFORM} view=${state.view} mode=${state.mode} depth=${state.portalDepth}\nfocus latency ${p(state.metrics.focus)}\nportal decisions: ${dec.length} (${dec.filter((d) => d.kind === 'hide').length} hidden, ${dec.filter((d) => d.kind !== 'hide').length} popups)\n` + dec.slice(-8).map((d) => `  ${d.kind} ${d.reason || ''} ${d.tag || ''} ${d.cls || d.url || ''}`).join('\n');
 }
 
 // ---------- boot ----------
@@ -211,16 +258,20 @@ async function boot() {
   portal.attachReadyListener();
   state.sources = await fetch('/api/sources').then((r) => r.json());
   await catalog.init();
-  renderHome();
   showView('home');
   try { const n = await catalog.sync(); if (n) { renderHome(); refreshFocus(); } } catch (e) { say(`Catalog sync failed: ${e.message}`); }
-  setInterval(async () => { try { if (await catalog.sync()) { if (state.view === 'home') renderHome(); } } catch {} }, 60_000);
+  setInterval(async () => { try { if (await catalog.sync() && state.view === 'home') { renderHome(); refreshFocus(); } } catch {} }, 60_000);
   addEventListener('resize', () => { portal.layout(); refreshFocus(); });
   let ringRaf = 0;
-  views.home.addEventListener('scroll', () => { if (ringRaf) return; ringRaf = requestAnimationFrame(() => { ringRaf = 0; if (state.focus) drawRing(state.focus); }); }, { passive: true });
-  window.addEventListener('message', (e) => { if (e.data?.type === 'hub:ready') { state.portalDepth = (state.portalDepth || 0) + 1; setTimeout(refreshFocus, 50); } });
-  // Desktop convenience: mouse click on a tile focuses+selects it.
+  const followScroll = () => { if (ringRaf) return; ringRaf = requestAnimationFrame(() => { ringRaf = 0; if (state.focus && state.view === 'home') drawRing(state.focus); }); };
+  views.home.addEventListener('scroll', followScroll, { passive: true, capture: true });
+  window.addEventListener('message', (e) => {
+    if (e.data?.type !== 'hub:ready') return;
+    if (state.goingBack) { state.goingBack = false; state.portalDepth = Math.max(1, state.portalDepth - 1); } else state.portalDepth++;
+    setTimeout(refreshFocus, 50);
+  });
+  // Desktop convenience: mouse click on a tile focuses and selects it.
   views.home.addEventListener('click', (e) => { const t = e.target.closest('[data-focusable]'); if (!t) return; const r = t.getBoundingClientRect(); setFocus({ el: t, x: r.left, y: r.top, w: r.width, h: r.height }); homeSelect(); });
 }
 boot();
-window.__app = { state, catalog, portal, player, dispatch };
+window.__app = { state, catalog, portal, player, dispatch, progress };

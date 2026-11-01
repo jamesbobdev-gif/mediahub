@@ -195,8 +195,42 @@
   function findVideo() { return document.querySelector(RULES.player) || document.querySelector('video'); }
   function setPlayback(on) { document.documentElement.classList.toggle('hub-playback', !!on); rectsDirty = true; }
 
+  // Stable-ish CSS selector for the rule inspector: id, else tag.classes chain up to three levels.
+  function selectorFor(el) {
+    const part = (e) => {
+      if (e.id && !/\d{3,}/.test(e.id)) return '#' + CSS.escape(e.id);
+      const cls = [...e.classList].filter((c) => !/^(hub-|focused|active|is-|js-)/.test(c) && !/\d{3,}/.test(c)).slice(0, 2);
+      let sel = e.tagName.toLowerCase() + cls.map((c) => '.' + CSS.escape(c)).join('');
+      const p = e.parentElement;
+      if (p && p.querySelectorAll(':scope > ' + sel).length > 1) {
+        const idx = [...p.children].filter((c) => c.tagName === e.tagName).indexOf(e) + 1;
+        sel += `:nth-of-type(${idx})`;
+      }
+      return sel;
+    };
+    const chain = [];
+    for (let e = el, i = 0; e && e !== document.body && i < 3; e = e.parentElement, i++) {
+      chain.unshift(part(e));
+      if (e.id) break;
+    }
+    return chain.join(' > ');
+  }
+  /** User-driven hide: pick the largest ancestor that is still not a preserved/grid container, hide it, return its selector. */
+  function hideUser(el) {
+    let target = el;
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      if ((PRESERVE && p.matches(PRESERVE)) || p.querySelector('video')) break;
+      const pr = p.getBoundingClientRect(), tr = target.getBoundingClientRect();
+      if (pr.width * pr.height > tr.width * tr.height * 1.5) break;   // parent is much bigger: stop
+      target = p;
+    }
+    const selector = selectorFor(target);
+    hide(target, 'user');
+    return selector;
+  }
+
   window.__hub = {
-    candidates, activate, scrollIntoAnchor, findVideo, setPlayback,
+    candidates, activate, scrollIntoAnchor, findVideo, setPlayback, selectorFor, hideUser,
     invalidate() { rectsDirty = true; },
     decisions,
     scrollBy(dy) { (scrollRoot || window).scrollBy({ top: dy }); rectsDirty = true; },

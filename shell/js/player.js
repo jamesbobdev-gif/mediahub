@@ -7,10 +7,10 @@ export class Player {
   constructor({ osd }) {
     this.osd = osd; this.video = null; this.doc = null; this.home = null;
     this.pendingSeek = null; this.seekTimer = null; this.scanRate = 1; this.scanTimer = null;
-    this.onEnd = () => {};
+    this.onEnd = () => {}; this.onProgress = () => {}; this.lastProgressAt = 0;
   }
 
-  attach(video) {
+  attach(video, { resumeAt = 0 } = {}) {
     this.video = video; this.doc = video.ownerDocument;
     this.home = { parent: video.parentNode, next: video.nextSibling };
     const overlay = this.doc.createElement('div');
@@ -22,8 +22,16 @@ export class Player {
     this.doc.body.appendChild(overlay);
     this.overlay = overlay;
     this.doc.documentElement.classList.add('hub-playback');
+    if (resumeAt > 0) {
+      const seek = () => { if (typeof video.fastSeek === 'function') video.fastSeek(resumeAt); else video.currentTime = resumeAt; };
+      if (video.readyState >= 1) seek(); else video.addEventListener('loadedmetadata', seek, { once: true });
+    }
     try { video.play(); } catch {}
-    video.addEventListener('timeupdate', this._onTime = () => this.renderOsd());
+    video.addEventListener('timeupdate', this._onTime = () => {
+      this.renderOsd();
+      const now = performance.now();
+      if (now - this.lastProgressAt > 3000) { this.lastProgressAt = now; this.onProgress(video.currentTime, video.duration); }
+    });
     video.addEventListener('ended', this._onEnded = () => this.onEnd());
     this.renderOsd(true);
   }
@@ -32,6 +40,7 @@ export class Player {
     if (!this.video) return;
     const v = this.video;
     this.stopScan();
+    this.onProgress(v.currentTime, v.duration);
     v.pause();
     v.removeEventListener('timeupdate', this._onTime);
     v.removeEventListener('ended', this._onEnded);

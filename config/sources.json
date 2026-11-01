@@ -20,9 +20,57 @@
     },
     "rules": {
       "touch": false,
-      "css": [".hero-slider", "#top-banner", "[class*='cookie']", ".newsletter-bar"],
-      "removeOnMount": ["div[style*='position: fixed'][style*='z-index: 2147']", ".interstitial"],
-      "preserve": [".grid", ".card", "[data-item-id]", ".player-root"],
+      "css": [
+        ".hero-slider",
+        "#top-banner",
+        "[class*='cookie']",
+        ".newsletter-bar"
+      ],
+      "removeOnMount": [
+        "div[style*='position: fixed'][style*='z-index: 2147']",
+        ".interstitial"
+      ],
+      "preserve": [
+        ".grid",
+        ".card",
+        "[data-item-id]",
+        ".player-root"
+      ],
+      "scrollRoot": ".grid-container",
+      "player": ".player-root video"
+    }
+  },
+  {
+    "id": "demo-html",
+    "name": "Demo HTML List",
+    "origin": "http://127.0.0.1:8787/demo/portal",
+    "home": "/index.html",
+    "intervalSec": 600,
+    "feed": {
+      "type": "html",
+      "url": "http://127.0.0.1:8787/demo/list.html",
+      "maxPages": 5,
+      "itemRegex": "<li class=\"item\"><a href=\"(?<url>[^\"]+)\"[^>]*>(?<title>.*?)</a>\\s*<img src=\"(?<image>[^\"]+)\">\\s*<span class=\"y\">(?<year>\\d{4})</span>",
+      "nextRegex": "<a class=\"next\" href=\"(?<url>[^\"]+)\""
+    },
+    "rules": {
+      "touch": false,
+      "css": [
+        ".hero-slider",
+        "#top-banner",
+        "[class*='cookie']",
+        ".newsletter-bar"
+      ],
+      "removeOnMount": [
+        "div[style*='position: fixed'][style*='z-index: 2147']",
+        ".interstitial"
+      ],
+      "preserve": [
+        ".grid",
+        ".card",
+        "[data-item-id]",
+        ".player-root"
+      ],
       "scrollRoot": ".grid-container",
       "player": ".player-root video"
     }

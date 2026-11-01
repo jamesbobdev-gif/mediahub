@@ -26,6 +26,12 @@ export class Scheduler {
 
   stop() { for (const t of this.timers.values()) clearTimeout(t); }
 
+  /** After a config reload: schedule new sources, drop timers for removed ones. */
+  refresh({ added = [], removed = [] } = {}) {
+    for (const id of removed) { clearTimeout(this.timers.get(id)); this.timers.delete(id); this.status.delete(id); }
+    for (const id of added) { const s = this.sources.get(id); if (s && adapterFor(s)) this.schedule(s, 1000); }
+  }
+
   async acquire() {
     if (this.active < this.poolSize) { this.active++; return; }
     await new Promise((r) => this.waiting.push(r));

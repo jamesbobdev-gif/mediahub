@@ -4,9 +4,10 @@
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync } from 'node:fs';
-import { loadSources } from './sources.js';
-import { loadFilters } from './filters.js';
+import { mkdirSync, watch } from 'node:fs';
+import { loadSources, reloadSources, patchSourceRules } from './sources.js';
+import { loadFilters, compileFilters } from './filters.js';
+import { readFileSync } from 'node:fs';
 import { createProxy } from './proxy.js';
 import { serveStatic } from './static.js';
 import { Catalog } from './ingest/catalog.js';
@@ -19,8 +20,10 @@ const DATA = process.env.HUB_DATA || path.join(ROOT, 'data');
 const log = (...a) => { if (process.env.HUB_QUIET) return; console.log(new Date().toISOString().slice(11, 19), ...a); };
 
 mkdirSync(DATA, { recursive: true });
-const sources = loadSources(path.join(ROOT, 'config', 'sources.json'));
-const filters = loadFilters(path.join(ROOT, 'config', 'filters.json'));
+const CONFIG = path.join(ROOT, 'config');
+const SOURCES_FILE = path.join(CONFIG, 'sources.json'), FILTERS_FILE = path.join(CONFIG, 'filters.json');
+const sources = loadSources(SOURCES_FILE);
+const filters = loadFilters(FILTERS_FILE);
 const proxy = createProxy({ sources, filters, log });
 const catalog = new Catalog(path.join(DATA, 'catalog.sqlite'));
 const artwork = new ArtworkStore({ dir: path.join(DATA, 'artwork'), budgetBytes: Number(process.env.HUB_ART_BUDGET || 2 * 1024 ** 3), log });
@@ -31,6 +34,28 @@ function json(res, status, body, extra = {}) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...extra });
   res.end(JSON.stringify(body));
 }
+function readJsonBody(req, limit = 64 * 1024) {
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    req.on('data', (c) => { buf += c; if (buf.length > limit) { reject(new Error('body too large')); req.destroy(); } });
+    req.on('end', () => { try { resolve(buf ? JSON.parse(buf) : {}); } catch (e) { reject(e); } });
+    req.on('error', reject);
+  });
+}
+
+// Config hot-reload: edit config/*.json (or let the rule inspector write it) and nothing restarts.
+let reloadTimer = null;
+function reloadConfig(reason) {
+  try {
+    const diff = reloadSources(SOURCES_FILE, sources);
+    Object.assign(filters, compileFilters(JSON.parse(readFileSync(FILTERS_FILE, 'utf8'))));
+    scheduler.refresh(diff);
+    log('config reloaded', reason, diff.added.length ? `+${diff.added}` : '', diff.removed.length ? `-${diff.removed}` : '');
+  } catch (e) { log('config reload failed (keeping previous):', e.message); }
+}
+try {
+  watch(CONFIG, (evt, file) => { if (!/\.json$/.test(file || '')) return; clearTimeout(reloadTimer); reloadTimer = setTimeout(() => reloadConfig(file), 300); });
+} catch (e) { log('config watch unavailable:', e.message); }
 
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'hub'}`);
@@ -54,6 +79,15 @@ async function route(req, res) {
     if (!file) { res.writeHead(404).end(); return; }
     res.setHeader('cache-control', 'public, max-age=604800, immutable');
     return serveStatic(path.dirname(file), path.basename(file), req, res);
+  }
+  const rulesMatch = p.match(/^\/api\/sources\/([^/]+)\/rules$/);
+  if (rulesMatch && req.method === 'PATCH') {
+    const id = decodeURIComponent(rulesMatch[1]);
+    if (!sources.has(id)) return json(res, 404, { error: 'unknown source' });
+    const patch = await readJsonBody(req);
+    const rules = patchSourceRules(SOURCES_FILE, id, patch);
+    reloadConfig('rules-patch');
+    return json(res, 200, { id, rules });
   }
   if (p === '/api/ingest/run' && req.method === 'POST') {
     const id = url.searchParams.get('source');

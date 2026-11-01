@@ -14,10 +14,15 @@ section[hidden] { display: none !important; }
 .home-header h1 { font-size: 40px; margin: 0; font-weight: 600; }
 .muted { color: var(--muted); }
 .hint { margin-left: auto; font-size: 18px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 24px; }
-.tile { background: var(--tile); border-radius: 12px; overflow: hidden; transition: transform 120ms ease; }
+.row { margin-bottom: 28px; }
+.row h2 { font-size: 24px; font-weight: 600; margin: 0 0 12px; }
+.row-tiles { display: flex; gap: 24px; overflow-x: auto; overflow-y: visible; padding: 10px 6px 14px; scrollbar-width: none; scroll-snap-type: x proximity; }
+.row-tiles::-webkit-scrollbar { display: none; }
+.tile { flex: 0 0 220px; width: 220px; scroll-snap-align: start; background: var(--tile); border-radius: 12px; overflow: hidden; transition: transform 120ms ease; position: relative; }
+.tile .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 6px; background: rgba(255,255,255,.25); }
+.tile .bar i { display: block; height: 100%; background: var(--accent); }
 .tile.focused { transform: scale(1.06); }
-.tile .poster { aspect-ratio: 2 / 3; background: #222733 center / cover no-repeat; display: grid; place-items: center; font-size: 64px; color: var(--muted); }
+.tile .poster { aspect-ratio: 2 / 3; background: #222733 center / cover no-repeat; display: grid; place-items: center; font-size: 64px; color: var(--muted); position: relative; }
 .tile.source .poster { aspect-ratio: 2 / 3; background: linear-gradient(160deg, #1f2a3d, #10151f); }
 .tile .meta { padding: 12px 14px 14px; }
 .tile .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
