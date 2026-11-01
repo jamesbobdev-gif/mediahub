@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdirSync, watch } from 'node:fs';
 import { loadSources, reloadSources, patchSourceRules } from './sources.js';
 import { loadFilters, compileFilters } from './filters.js';
+import { loadAccess, clientAllowed } from './access.js';
 import { readFileSync } from 'node:fs';
 import { createProxy } from './proxy.js';
 import { serveStatic } from './static.js';
@@ -22,8 +23,10 @@ const log = (...a) => { if (process.env.HUB_QUIET) return; console.log(new Date(
 mkdirSync(DATA, { recursive: true });
 const CONFIG = path.join(ROOT, 'config');
 const SOURCES_FILE = path.join(CONFIG, 'sources.json'), FILTERS_FILE = path.join(CONFIG, 'filters.json');
+const ACCESS_FILE = path.join(CONFIG, 'access.json');
 const sources = loadSources(SOURCES_FILE);
 const filters = loadFilters(FILTERS_FILE);
+const access = loadAccess(ACCESS_FILE);
 const proxy = createProxy({ sources, filters, log });
 const catalog = new Catalog(path.join(DATA, 'catalog.sqlite'));
 const artwork = new ArtworkStore({ dir: path.join(DATA, 'artwork'), budgetBytes: Number(process.env.HUB_ART_BUDGET || 2 * 1024 ** 3), log });
@@ -49,6 +52,7 @@ function reloadConfig(reason) {
   try {
     const diff = reloadSources(SOURCES_FILE, sources);
     Object.assign(filters, compileFilters(JSON.parse(readFileSync(FILTERS_FILE, 'utf8'))));
+    Object.assign(access, loadAccess(ACCESS_FILE));
     scheduler.refresh(diff);
     log('config reloaded', reason, diff.added.length ? `+${diff.added}` : '', diff.removed.length ? `-${diff.removed}` : '');
   } catch (e) { log('config reload failed (keeping previous):', e.message); }
@@ -115,6 +119,12 @@ async function route(req, res) {
 }
 
 const server = http.createServer((req, res) => {
+  const ip = req.socket.remoteAddress || '';
+  if (!clientAllowed(access, ip)) {
+    log('denied client', ip, req.url);
+    res.writeHead(403, { 'content-type': 'text/plain' }).end('This device is not allowed to use the hub. Add its address to config/access.json.');
+    return;
+  }
   route(req, res).catch((e) => {
     log('error', req.url, e.stack || e.message);
     if (!res.headersSent) res.writeHead(500, { 'content-type': 'text/plain' });
@@ -124,6 +134,7 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   log(`hub listening on http://127.0.0.1:${PORT}  (shell: /, status: /api/status)`);
+  log(access.allowClients.length ? `clients allowed: ${access.allowClients.join(', ')} (+ this machine)` : 'clients allowed: any device on the network (set config/access.json to restrict)');
   scheduler.start();
   setInterval(() => { if (!scheduler.running.size) artwork.sweep(); }, 24 * 3600 * 1000).unref();
 });

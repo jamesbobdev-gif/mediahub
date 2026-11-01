@@ -1,0 +1,4 @@
+{
+  "_comment": "Devices allowed to use the hub. Empty list = any device on the network. This PC (loopback) is always allowed. Hot-reloaded on save.",
+  "allowClients": []
+}

@@ -126,8 +126,12 @@ The viewer frame cannot leave the hub. Layers, outermost first:
   of a page, unless the source itself is hosted there. Cookies are prefixed per source and only
   sent back to that source; third parties cannot set cookies on the TV.
 
-**Threat model.** The hub is a home-LAN appliance with no authentication: anyone on your network can
-browse through it and change rules. Do not expose port 8787 to the internet. Portal JavaScript still
+* **Client allowlist** (`config/access.json`): list the TV's address in `allowClients` and every
+  other device on the network gets a 403. The machine running the hub is always allowed. Empty
+  list means any device. Hot-reloaded on save.
+
+**Threat model.** The hub is a home-LAN appliance with no login. Without the client allowlist,
+anyone on your network can browse through it and change rules. Do not expose port 8787 to the internet. Portal JavaScript still
 runs inside the TV browser (locked to the hub origin by CSP), so keep the TV's firmware updated as
 you would for any browsing, and only configure sources you trust.
 
