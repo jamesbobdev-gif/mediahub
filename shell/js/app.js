@@ -72,11 +72,14 @@ function move(dir) {
 }
 
 // ---------- home view: rows ----------
-function tile({ id, title, sub, portal: portalUrl, key, pct, icon }) {
+const hueOf = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; };
+function tile({ id, title, sub, portal: portalUrl, key, pct, icon, online }) {
   const t = document.createElement('div');
-  t.className = 'tile' + (icon ? ' source' : ''); t.dataset.focusable = '';
+  t.className = 'tile' + (icon ? ' wide' : ''); t.dataset.focusable = '';
   if (id) t.dataset.id = id; if (portalUrl) t.dataset.portal = portalUrl; if (key) t.dataset.key = key;
-  t.innerHTML = `<div class="poster">${icon ? `<span>${icon}</span>` : ''}${pct != null ? '<div class="bar"><i></i></div>' : ''}</div><div class="meta"><div class="title"></div><div class="sub"></div></div>`;
+  t.style.setProperty('--hue', hueOf(title));
+  const initial = !icon ? `<span class="initial">${(title || '?').trim()[0].toUpperCase()}</span>` : '';
+  t.innerHTML = `<div class="poster">${icon ? `<span>${icon}</span>` : initial}${online ? '<span class="dot"></span>' : ''}${pct != null ? '<div class="bar"><i></i></div>' : ''}</div><div class="meta"><div class="title"></div><div class="sub"></div></div>`;
   t.querySelector('.title').textContent = title; t.querySelector('.sub').textContent = sub || '';
   if (pct != null) t.querySelector('.bar i').style.width = `${Math.round(pct * 100)}%`;
   return t;
@@ -86,6 +89,7 @@ function row(title, tiles) {
   const s = document.createElement('section'); s.className = 'row';
   s.innerHTML = `<h2></h2><div class="row-tiles"></div>`;
   s.querySelector('h2').textContent = title;
+  s.querySelector('h2').insertAdjacentHTML('beforeend', `<small>${tiles.length}</small>`);
   const wrap = s.querySelector('.row-tiles'); for (const t of tiles) wrap.appendChild(t);
   return s;
 }
@@ -96,8 +100,9 @@ function renderHome() {
   const sub = (it) => [it.year, it.kind === 'episode' && it.season != null ? `S${it.season}E${it.episode ?? '?'}` : null, it.sources.map((s) => s.sourceId).join(', ')].filter(Boolean).join(' · ');
   const byKind = (k) => items.filter((i) => i.kind === k).map((it) => tile({ id: it.id, title: it.title, sub: sub(it) }));
   const cont = progress.list().map((p) => tile({ key: p.key, id: p.itemId, portal: p.portalUrl, title: p.title, sub: `${fmtMin(p.d - p.t)} left`, pct: p.t / p.d }));
-  const srcs = state.sources.map((s) => tile({ portal: s.home, title: s.name, sub: 'open portal', icon: '⌂' }));
-  const searchTile = tile({ title: 'Search', sub: `${items.length} titles`, icon: '⌕' }); searchTile.dataset.search = '';
+  const countFor = (id) => items.filter((i) => i.sources.some((s) => s.sourceId === id)).length;
+  const srcs = state.sources.map((s) => tile({ portal: s.home, title: s.name, sub: `${countFor(s.id)} titles · open portal`, icon: '⌂', online: true }));
+  const searchTile = tile({ title: 'Search', sub: `${items.length} titles across ${state.sources.length} sources`, icon: '⌕' }); searchTile.dataset.search = '';
   for (const r of [row('Continue watching', cont), row('Sources', [searchTile, ...srcs]), row('Movies', byKind('movie')), row('Series', byKind('series')), row('Episodes', byKind('episode'))]) if (r) rows.appendChild(r);
   lazyArtwork($('#rows'));
 }
@@ -159,10 +164,14 @@ function lazyArtwork(container) {
       const t = e.target; artObserver.unobserve(t);
       const it = catalog.items.get(t.dataset.id); if (!it) continue;
       const url = catalog.artworkUrl(it); if (!url) continue;
-      art.get(url).then((obj) => { t.querySelector('.poster').style.backgroundImage = `url(${obj})`; }).catch(() => {});
+      art.get(url).then((obj) => { const p = t.querySelector('.poster'); p.style.backgroundImage = `url(${obj})`; p.querySelector('.initial')?.remove(); }).catch(() => {});
     }
   }, { root: container.closest('section'), rootMargin: '400px 600px' });
   for (const t of container.querySelectorAll('.tile[data-id]')) artObserver.observe(t);
+}
+function tickClock() {
+  const el = $('#clock'); if (!el) return;
+  el.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 function portalPathFor(sourceId, absUrl) {
   const def = state.sources.find((s) => s.id === sourceId);
@@ -316,6 +325,7 @@ function toggleHud() {
 // ---------- boot ----------
 async function boot() {
   registerPlatformKeys();
+  tickClock(); setInterval(tickClock, 15_000);
   // Physical keyboard (desktop / USB keyboard on a TV): printable keys type into the search box.
   // Registered before the intent router so letters mapped to intents (M, H, C, I) still type here.
   window.addEventListener('keydown', (e) => {
