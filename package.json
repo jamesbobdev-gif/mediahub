@@ -1,0 +1,14 @@
+{
+  "name": "mediahub",
+  "version": "0.1.0",
+  "description": "TV media hub: remote-driven web viewer, rewriting proxy, and multi-source catalog ingestion",
+  "type": "module",
+  "main": "server/index.js",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test \"test/*.test.js\"",
+    "ingest": "node server/ingest/run.js"
+  },
+  "license": "MIT"
+}

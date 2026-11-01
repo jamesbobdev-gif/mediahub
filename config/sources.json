@@ -1,0 +1,30 @@
+[
+  {
+    "id": "demo",
+    "name": "Demo Portal",
+    "origin": "http://127.0.0.1:8787/demo/portal",
+    "home": "/index.html",
+    "intervalSec": 600,
+    "feed": {
+      "url": "http://127.0.0.1:8787/demo/feed.json",
+      "items": "results",
+      "next": "next",
+      "pageParam": "page",
+      "map": {
+        "title": "name",
+        "year": "meta.year",
+        "kind": "type",
+        "url": "link",
+        "image": "poster"
+      }
+    },
+    "rules": {
+      "touch": false,
+      "css": [".hero-slider", "#top-banner", "[class*='cookie']", ".newsletter-bar"],
+      "removeOnMount": ["div[style*='position: fixed'][style*='z-index: 2147']", ".interstitial"],
+      "preserve": [".grid", ".card", "[data-item-id]", ".player-root"],
+      "scrollRoot": ".grid-container",
+      "player": ".player-root video"
+    }
+  }
+]

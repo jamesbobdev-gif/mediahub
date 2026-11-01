@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Media Hub</title>
+<meta name="viewport" content="width=1920, user-scalable=no">
+<link rel="stylesheet" href="/shell/shell.css">
+</head>
+<body>
+  <section id="view-home">
+    <header class="home-header">
+      <h1>Media Hub</h1>
+      <div id="home-count" class="muted">loading…</div>
+      <div class="muted hint">↑↓←→ move · Enter open · Esc back · M cursor mode · Space play · I stats</div>
+    </header>
+    <div id="grid" class="grid"></div>
+  </section>
+
+  <section id="view-portal" hidden>
+    <div id="portal-wrap"><iframe id="portal-frame" title="portal" allow="autoplay; fullscreen"></iframe></div>
+  </section>
+
+  <div id="focus-ring" hidden></div>
+  <div id="cursor" hidden></div>
+  <div id="osd" hidden>
+    <div class="osd-row"><span class="osd-state">▶</span><span class="osd-time">0:00 / 0:00</span></div>
+    <div class="osd-bar"><div class="osd-fill"></div></div>
+  </div>
+  <div id="toast" hidden></div>
+  <pre id="hud" hidden></pre>
+
+  <script type="module" src="/shell/js/app.js"></script>
+</body>
+</html>

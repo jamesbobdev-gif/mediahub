@@ -1,0 +1,15 @@
+{
+  "id": "com.example.mediahub",
+  "version": "0.1.0",
+  "vendor": "Example",
+  "type": "web",
+  "main": "index.html",
+  "title": "Media Hub",
+  "icon": "icon.png",
+  "largeIcon": "icon-large.png",
+  "resolution": "1920x1080",
+  "disableBackHistoryAPI": true,
+  "requiredKeys": ["Red", "Green", "Yellow", "Blue", "Play", "Pause", "Stop", "Rewind", "FastForward", "Info"],
+  "supportTouchMode": "none",
+  "_comment": "webOS packaging: the TV app is index.html pointed at the hub server; replace relative /shell paths with the hub URL or bundle a loader that redirects to http://<hub-ip>:8787/."
+}

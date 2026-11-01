@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo Aggregator Portal</title>
+<style>
+  body { margin: 0; font-family: Arial, sans-serif; background: #f3f3f3; color: #222; }
+  header.site { position: fixed; top: 0; left: 0; right: 0; height: 70px; background: #222; color: #fff; z-index: 9999; display: flex; align-items: center; padding: 0 20px; gap: 20px; }
+  header.site a { color: #fff; }
+  .newsletter-bar { background: #ffe68a; padding: 10px; text-align: center; margin-top: 70px; }
+  .hero-slider { height: 320px; background: linear-gradient(90deg, #4a148c, #e91e63); color: #fff; display: grid; place-items: center; font-size: 40px; }
+  #top-banner { width: 728px; height: 90px; margin: 10px auto; background: #ddd; display: grid; place-items: center; }
+  .grid-container { padding: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
+  .card { background: #fff; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.2); cursor: pointer; }
+  .card .thumb { aspect-ratio: 2/3; background: #99a; }
+  .card .t { padding: 8px; font-size: 14px; height: 40px; overflow: hidden; }
+  .ad-slot { background: #fbb; display: grid; place-items: center; font-size: 12px; color: #600; }
+  .ad-slot img { width: 300px; height: 250px; display: block; }
+  .cookie-wall { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 10000; display: grid; place-items: center; }
+  .cookie-wall > div { background: #fff; padding: 30px; width: 500px; }
+  .interstitial { position: fixed; right: 0; bottom: 0; width: 320px; height: 100px; background: #fc0; z-index: 2147483647; }
+  .player-root { margin-top: 90px; padding: 16px; }
+  .player-root video { width: 960px; max-width: 100%; background: #000; }
+  .sentinel { height: 1px; }
+  footer { padding: 30px; color: #666; }
+</style>
+</head>
+<body>
+  <header class="site"><strong>PORTAL</strong> <a href="index.html">Home</a> <a href="index.html?kind=series">Series</a> <a href="index.html?kind=movie">Movies</a> <span style="margin-left:auto">sticky header (z-index 9999)</span></header>
+  <div class="newsletter-bar">Subscribe to our newsletter! (noise bar)</div>
+  <div class="cookie-wall"><div><h2>We value your privacy</h2><p>Accept all cookies.</p><button>Accept</button></div></div>
+  <div class="hero-slider">HERO SLIDER (noise)</div>
+  <div id="top-banner">728x90 banner (noise)</div>
+
+  <div id="main"></div>
+  <div class="grid-container">
+    <div class="grid" id="grid"></div>
+    <div class="sentinel" id="sentinel"></div>
+  </div>
+  <footer>Page end.</footer>
+
+  <script>
+    // Simulated aggressive portal behaviour.
+    const params = new URLSearchParams(location.search);
+    const watch = params.get('watch');
+    // Pop-under on first click anywhere.
+    document.addEventListener('click', () => {
+      try { window.open('https://ads.example/popunder?id=1', '_blank'); } catch {}
+    }, { once: true, capture: true });
+    // Late-mounted overlay.
+    setTimeout(() => { const d = document.createElement('div'); d.className = 'interstitial'; d.textContent = 'INTERSTITIAL (late overlay)'; document.body.appendChild(d); }, 800);
+    // Tracking beacons.
+    fetch('https://tracker.example/pixel.gif?e=view').catch(() => {});
+    const s = document.createElement('script'); s.src = 'https://ads.example/ads/loader.js'; document.head.appendChild(s);
+
+    if (watch) {
+      const p = document.createElement('div');
+      p.className = 'player-root';
+      p.innerHTML = '<h2 id="ptitle">Loading…</h2><video controls playsinline src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"></video><p>Player page: the sticky header above overlaps the player until the hub enters playback mode.</p>';
+      document.getElementById('main').appendChild(p);
+      document.querySelector('.grid-container').remove();
+      fetch('/demo/feed.json').then((r) => r.json()).then((d) => { const it = d.results.find((x) => String(x.id) === watch); document.getElementById('ptitle').textContent = it ? it.name : 'Unknown'; });
+    } else {
+      // Infinite scroll on window-level sentinel.
+      let page = 1, loading = false;
+      const grid = document.getElementById('grid');
+      async function loadPage() {
+        if (loading || page > 6) return; loading = true;
+        const r = await fetch(`/demo/feed.json?page=${page}`); const d = await r.json();
+        const items = d.results.filter((x) => !params.get('kind') || x.type === params.get('kind'));
+        items.forEach((it, i) => {
+          if (i > 0 && i % 7 === 0) {
+            const ad = document.createElement('div'); ad.className = 'card ad-slot';
+            ad.innerHTML = '<img src="https://ads.example/banner?w=300&h=250" alt="">AD SLOT (inside grid)';
+            grid.appendChild(ad);
+          }
+          const c = document.createElement('div'); c.className = 'card'; c.dataset.itemId = it.id;
+          c.innerHTML = `<div class="thumb"></div><div class="t"></div>`;
+          c.querySelector('.t').textContent = `${it.name} · p${page}`;
+          c.querySelector('.thumb').style.background = `hsl(${(it.id * 47) % 360} 40% 60%)`;
+          c.addEventListener('mousedown', () => { location.href = `index.html?watch=${it.id}`; });
+          grid.appendChild(c);
+        });
+        page++; loading = false;
+      }
+      new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) loadPage(); }).observe(document.getElementById('sentinel'));
+      loadPage();
+    }
+  </script>
+</body>
+</html>

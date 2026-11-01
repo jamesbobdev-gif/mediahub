@@ -1,0 +1,216 @@
+// Injected into every proxied portal page, before the portal's own scripts.
+// Responsibilities: desktop-layout commitment, popup suppression, noise removal
+// that preserves grid geometry, scroll-root forwarding for infinite scroll, and a
+// small same-origin API (window.__hub) the shell drives for spatial navigation.
+(function () {
+  'use strict';
+  const RULES = Object.assign({ css: [], removeOnMount: [], preserve: [], scrollRoot: null, player: 'video', touch: false }, window.__HUB_RULES || {});
+  const PRESERVE = RULES.preserve.join(',') || null;
+  const REMOVE = RULES.removeOnMount.join(',') || null;
+  const AD_RATIOS = [[300, 250], [728, 90], [320, 50], [160, 600], [970, 250], [300, 600], [336, 280]];
+  const decisions = [];
+
+  // ---- 1. Commit the portal to its desktop layout ------------------------------
+  if (!RULES.touch) {
+    try { Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0, configurable: true }); } catch {}
+    try { delete window.ontouchstart; } catch {}
+    try { Object.defineProperty(window, 'ontouchstart', { get: () => undefined, set() {}, configurable: true }); } catch {}
+  }
+
+  // ---- 2. Popup / pop-under suppression ----------------------------------------
+  const sameOrigin = (href) => { try { return new URL(href, location.href).origin === location.origin; } catch { return false; } };
+  const realOpen = window.open;
+  window.open = function (url, ...rest) {
+    if (url && !sameOrigin(url) && !String(url).startsWith('/p/')) { decisions.push({ kind: 'popup', url: String(url) }); return null; }
+    return realOpen.call(window, url, ...rest);
+  };
+  let lastClickAt = 0;
+  document.addEventListener('click', (e) => {
+    lastClickAt = performance.now();
+    const a = e.target && e.target.closest && e.target.closest('a[target="_blank"],a[rel~="sponsored"]');
+    if (a && !sameOrigin(a.href) && !a.href.startsWith(location.origin + '/p/')) { e.preventDefault(); e.stopImmediatePropagation(); decisions.push({ kind: 'blank-anchor', url: a.href }); }
+  }, true);
+  // Navigation spawned within 100ms of a click to a different origin is a pop-under pattern.
+  const realAssign = location.assign.bind(location);
+  window.addEventListener('beforeunload', (e) => {
+    if (performance.now() - lastClickAt < 100 && document.activeElement && document.activeElement.tagName !== 'A') { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  // ---- 3. Clickable tracking for focus candidates -------------------------------
+  const realAdd = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function (type, fn, opts) {
+    if ((type === 'click' || type === 'mousedown' || type === 'pointerdown') && this instanceof Element) this.__hubClickable = true;
+    return realAdd.call(this, type, fn, opts);
+  };
+
+  // ---- 4. Noise removal preserving grid geometry --------------------------------
+  function inPreserved(el) { return PRESERVE ? !!el.closest(PRESERVE) : false; }
+  function isGridCell(el) {
+    const p = el.parentElement;
+    if (!p) return false;
+    const d = getComputedStyle(p).display;
+    return (d === 'grid' || d === 'inline-grid' || d === 'flex' || d === 'inline-flex') && PRESERVE && p.matches(PRESERVE);
+  }
+  function placeholderFor(el) {
+    const cs = getComputedStyle(el);
+    const ph = document.createElement('div');
+    ph.className = 'hub-placeholder';
+    ph.setAttribute('aria-hidden', 'true');
+    for (const prop of ['grid-column', 'grid-row', 'flex-basis', 'flex-grow', 'flex-shrink', 'width', 'height', 'margin']) {
+      const v = cs.getPropertyValue(prop); if (v) ph.style.setProperty(prop, v);
+    }
+    return ph;
+  }
+  function hide(el, reason) {
+    if (el.classList.contains('hub-hidden') || el.classList.contains('hub-placeholder')) return;
+    decisions.push({ kind: 'hide', reason, tag: el.tagName, cls: el.className && String(el.className).slice(0, 60) });
+    if (isGridCell(el)) { el.replaceWith(placeholderFor(el)); return; }   // keep neighbours in place
+    el.classList.add('hub-hidden');
+  }
+  function heuristicScore(el) {
+    if (el === document.body || el === document.documentElement) return 0;
+    const cs = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return 0;
+    let score = 0;
+    const fixed = cs.position === 'fixed' || cs.position === 'sticky';
+    if (fixed) score += 2;
+    if (+cs.zIndex > 1000) score += 2;
+    const cover = (r.width * r.height) / (innerWidth * innerHeight);
+    if (cover > 0.25) score += 2;
+    if (el.querySelector('video')) score -= 10;
+    const text = (el.textContent || '').trim();
+    if (text.length > 200 && !fixed) score -= 3;
+    // Navigation chrome (several links) is not an overlay even when fixed; playback mode un-fixes it instead.
+    if (el.querySelectorAll('a[href]').length >= 2) score -= 2;
+    const media = el.matches('iframe,img') ? el : el.querySelector('iframe,img');
+    if (media) {
+      const mr = media.getBoundingClientRect();
+      if (AD_RATIOS.some(([w, h]) => Math.abs(mr.width - w) < 4 && Math.abs(mr.height - h) < 4)) score += 4;
+      if (media.tagName === 'IFRAME' && media.src && !sameOrigin(media.src) && !media.src.startsWith(location.origin + '/p/')) score += 2;
+    }
+    return score;
+  }
+  function evaluate(el) {
+    if (!(el instanceof Element) || el.closest('.hub-hidden,.hub-placeholder,.hub-player-overlay')) return;
+    if (REMOVE && el.matches(REMOVE)) { if (!el.matches(PRESERVE || '\0')) hide(el, 'rule'); return; }
+    if (inPreserved(el) && !isGridCell(el)) return;
+    if (heuristicScore(el) >= 4) hide(el, 'heuristic');
+  }
+  let pending = new Set(), scheduled = false;
+  function schedule(nodes) {
+    for (const n of nodes) if (n instanceof Element) pending.add(n);
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      const batch = [...pending]; pending.clear();
+      for (const el of batch) { evaluate(el); if (el.children.length < 50) for (const c of el.children) evaluate(c); }
+      rectsDirty = true;
+    });
+  }
+  const mo = new MutationObserver((muts) => { for (const m of muts) schedule(m.addedNodes); });
+  // An image that resolved to the proxy's 1x1 placeholder is a neutralised ad: collapse its slot,
+  // replacing a grid cell with a same-size placeholder so neighbours keep their position.
+  document.addEventListener('load', (e) => {
+    const img = e.target;
+    if (!(img instanceof HTMLImageElement) || img.naturalWidth !== 1 || img.naturalHeight !== 1) return;
+    let target = img;
+    for (let p = img.parentElement; p && p !== document.body; p = p.parentElement) {
+      if (isGridCell(p)) { target = p; break; }
+      if (PRESERVE && p.matches(PRESERVE)) break;
+    }
+    hide(target, 'placeholder-image');
+  }, true);
+
+  // ---- 5. Scroll root forwarding for infinite scroll ----------------------------
+  let scrollRoot = null;
+  function setupScrollRoot() {
+    scrollRoot = RULES.scrollRoot ? document.querySelector(RULES.scrollRoot) : null;
+    if (!scrollRoot) return;
+    document.documentElement.classList.add('hub-has-scroll-root');
+    scrollRoot.classList.add('hub-scroll-root');
+    const forward = () => { window.dispatchEvent(new Event('scroll')); rectsDirty = true; };
+    scrollRoot.addEventListener('scroll', forward, { passive: true });
+    const def = (obj, prop, get) => { try { Object.defineProperty(obj, prop, { get, configurable: true }); } catch {} };
+    def(window, 'scrollY', () => scrollRoot.scrollTop);
+    def(window, 'pageYOffset', () => scrollRoot.scrollTop);
+    def(document.documentElement, 'scrollTop', () => scrollRoot.scrollTop);
+    def(document.documentElement, 'scrollHeight', () => scrollRoot.scrollHeight);
+    def(document.documentElement, 'clientHeight', () => scrollRoot.clientHeight);
+    const realScrollTo = window.scrollTo.bind(window);
+    window.scrollTo = (x, y) => { if (typeof x === 'object') scrollRoot.scrollTo(x); else scrollRoot.scrollTo(x, y); };
+    window.scrollBy = (x, y) => scrollRoot.scrollBy(x, y);
+  }
+
+  // ---- 6. Shell-facing API ------------------------------------------------------
+  let rectsDirty = true, rectCache = [];
+  const FOCUSABLE = 'a[href],button,[tabindex]:not([tabindex="-1"]),[role="button"],[role="link"],input,select,textarea,summary,video';
+  function visible(el, r) {
+    if (!r.width || !r.height) return false;
+    if (r.bottom < -200 || r.top > innerHeight + 200) return false;
+    const cs = getComputedStyle(el);
+    return cs.visibility !== 'hidden' && cs.display !== 'none' && cs.pointerEvents !== 'none';
+  }
+  function candidates() {
+    if (!rectsDirty) return rectCache;
+    const out = [];
+    const all = document.querySelectorAll(FOCUSABLE);
+    const seen = new Set();
+    const push = (el) => {
+      if (seen.has(el) || el.closest('.hub-hidden,.hub-placeholder')) return;
+      // Collapse nested focusables (a > img wrapped by a card with its own listener) to the outermost card.
+      const r = el.getBoundingClientRect();
+      if (!visible(el, r)) return;
+      seen.add(el);
+      out.push({ el, x: r.left, y: r.top, w: r.width, h: r.height });
+    };
+    for (const el of all) push(el);
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.__hubClickable && !n.closest(FOCUSABLE)) push(n);
+    rectCache = out; rectsDirty = false;
+    return out;
+  }
+  function activate(el) {
+    const r = el.getBoundingClientRect();
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    const common = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
+    // Many portals bind mousedown only; send the full sequence.
+    for (const [Ctor, type] of [[PointerEvent, 'pointerdown'], [MouseEvent, 'mousedown'], [PointerEvent, 'pointerup'], [MouseEvent, 'mouseup']]) {
+      try { el.dispatchEvent(new Ctor(type, { ...common, pointerId: 1, isPrimary: true, button: 0 })); } catch {}
+    }
+    if (el.matches('input,select,textarea')) { el.focus(); return; }
+    el.click();
+  }
+  function scrollIntoAnchor(el) {
+    // Keep the focused row at ~40% from the top so the infinite-scroll sentinel is reached early.
+    const r = el.getBoundingClientRect();
+    const target = innerHeight * 0.4;
+    const delta = r.top - target;
+    if (Math.abs(delta) < 8) return;
+    if (scrollRoot) scrollRoot.scrollBy({ top: delta, behavior: 'auto' });
+    else window.scrollBy({ top: delta, behavior: 'auto' });
+    rectsDirty = true;
+  }
+  function findVideo() { return document.querySelector(RULES.player) || document.querySelector('video'); }
+  function setPlayback(on) { document.documentElement.classList.toggle('hub-playback', !!on); rectsDirty = true; }
+
+  window.__hub = {
+    candidates, activate, scrollIntoAnchor, findVideo, setPlayback,
+    invalidate() { rectsDirty = true; },
+    decisions,
+    scrollBy(dy) { (scrollRoot || window).scrollBy({ top: dy }); rectsDirty = true; },
+    elementAt(x, y) { return document.elementFromPoint(x, y); },
+  };
+
+  // ---- 7. Boot ------------------------------------------------------------------
+  function boot() {
+    setupScrollRoot();
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+    schedule(document.body ? document.body.querySelectorAll('*') : []);
+    addEventListener('resize', () => { rectsDirty = true; }, { passive: true });
+    addEventListener('scroll', () => { rectsDirty = true; }, { passive: true, capture: true });
+    try { parent.postMessage({ type: 'hub:ready', source: RULES.sourceId, href: location.href }, '*'); } catch {}
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();

@@ -1,0 +1,31 @@
+/* Injected after every portal stylesheet. Keep it small: structural CSS stays the portal's. */
+.hub-hidden { display: none !important; }
+.hub-placeholder { visibility: hidden !important; pointer-events: none !important; }
+
+/* 10-foot readability: floor on font size and hit targets. */
+html { font-size: max(1rem, 18px) !important; }
+a, button, [role="button"] { min-height: 32px; }
+
+/* Infinite scroll in a fixed-height frame: the designated root is the real scroller. */
+html.hub-has-scroll-root, html.hub-has-scroll-root body { overflow: hidden !important; height: 100% !important; }
+.hub-scroll-root { overflow-y: auto !important; height: 100vh !important; max-height: 100vh !important; box-sizing: border-box !important; scrollbar-width: none; }
+.hub-scroll-root::-webkit-scrollbar { display: none; }
+
+/* Playback mode: the player owns a stacking context above everything; sticky chrome is un-fixed. */
+html.hub-playback video,
+html.hub-playback .player-root,
+html.hub-playback [class*="player"],
+html.hub-playback [id*="player"] {
+  position: relative;
+  isolation: isolate;
+  z-index: 2147483000 !important;
+}
+html.hub-playback header,
+html.hub-playback nav,
+html.hub-playback [class*="sticky"],
+html.hub-playback [class*="fixed-top"] {
+  position: static !important;
+}
+
+/* Portal focus styles are usually suppressed; the shell draws its own ring. */
+*:focus { outline: none !important; }

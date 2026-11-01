@@ -1,0 +1,29 @@
+{
+  "hosts": [
+    "(^|\\.)doubleclick\\.net$",
+    "(^|\\.)googlesyndication\\.com$",
+    "(^|\\.)googleadservices\\.com$",
+    "(^|\\.)adnxs\\.com$",
+    "(^|\\.)adsrvr\\.org$",
+    "(^|\\.)taboola\\.com$",
+    "(^|\\.)outbrain\\.com$",
+    "(^|\\.)popads\\.net$",
+    "(^|\\.)propellerads\\.com$",
+    "(^|\\.)exoclick\\.com$",
+    "(^|\\.)adsterra\\.com$",
+    "(^|\\.)ads\\.example$",
+    "(^|\\.)tracker\\.example$"
+  ],
+  "paths": [
+    "/ads?/",
+    "/adserv",
+    "/banner",
+    "pop(under|up)",
+    "/track(ing)?/",
+    "/pixel\\.",
+    "/beacon",
+    "/analytics",
+    "/interstitial"
+  ],
+  "adSizes": [[300, 250], [728, 90], [320, 50], [160, 600], [970, 250], [300, 600], [336, 280]]
+}
