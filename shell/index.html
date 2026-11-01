@@ -11,9 +11,19 @@
     <header class="home-header">
       <h1>Media Hub</h1>
       <div id="home-count" class="muted">loading…</div>
-      <div class="muted hint">↑↓←→ move · Enter open · Esc back · M cursor · H hide element · Space play · I stats</div>
+      <div class="muted hint">↑↓←→ move · Enter open · Esc back · S search · M cursor · H hide element · Space play · I stats</div>
     </header>
     <div id="rows"></div>
+  </section>
+
+  <section id="view-search" hidden>
+    <header class="home-header">
+      <h1>Search</h1>
+      <div id="search-query" class="query"><span class="caret"></span></div>
+      <div class="muted hint">type with the keys · Back deletes · Esc on empty returns home</div>
+    </header>
+    <div id="keyboard" class="keyboard"></div>
+    <div id="search-rows"></div>
   </section>
 
   <section id="view-portal" hidden>

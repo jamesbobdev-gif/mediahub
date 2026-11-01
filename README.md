@@ -56,6 +56,11 @@ On Windows PowerShell 5.1 use `;` rather than `&&` to chain commands.
   that registered a click/mousedown listener (tracked by wrapping `addEventListener`). Score is
   primary-axis distance + off-axis penalty − overlap bonus. Rect caches are invalidated on scroll,
   resize and DOM mutation, recomputed at most once per frame.
+* **Search** (`search.js`): a Search tile (or `S` on desktop) opens an on-screen keyboard grid
+  navigated by the same spatial code. Every key press filters the local catalog with prefix,
+  word-prefix, substring and Jaro-Winkler fuzzy ranking, so results appear with no network
+  round trip. A physical or USB keyboard types directly. Back deletes a character and leaves
+  the screen when the query is empty; opening a result and pressing Back returns to the results.
 * **Cursor mode** (`cursor.js`) is the explicit fallback: hold-to-accelerate pointer, and "select"
   synthesises the full `pointerdown → mousedown → pointerup → mouseup → click` sequence because
   many portals bind to `mousedown` only.

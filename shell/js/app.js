@@ -5,9 +5,10 @@ import { Player } from './player.js';
 import { CatalogCache, ArtworkLru } from './catalog.js';
 import { PortalFrame } from './portal.js';
 import { progress } from './progress.js';
+import { search, KEY_ROWS } from './search.js';
 
 const $ = (s) => document.querySelector(s);
-const views = { home: $('#view-home'), portal: $('#view-portal') };
+const views = { home: $('#view-home'), search: $('#view-search'), portal: $('#view-portal') };
 const ring = $('#focus-ring'), cursorEl = $('#cursor'), toast = $('#toast'), osd = $('#osd'), hud = $('#hud');
 
 const state = {
@@ -16,6 +17,7 @@ const state = {
   focus: null,             // {el,x,y,w,h} in shell coordinates
   sources: [],
   portalDepth: 0, goingBack: false, portalSource: null,
+  query: '', searchReturn: 'home',
   playKey: null, playTitle: null, playItemId: null,
   metrics: { focus: [], seek: [] },
 };
@@ -31,21 +33,21 @@ function setFocus(c, { scroll = true } = {}) {
   state.focus = c;
   if (!c) { ring.hidden = true; return; }
   // Scroll first, then measure: the ring is fixed-position and must follow the post-scroll rect.
-  if (state.view === 'home') { c.el.classList.add('focused'); if (scroll) c.el.scrollIntoView({ block: 'center', inline: 'center' }); }
+  if (state.view !== 'portal') { c.el.classList.add('focused'); if (scroll) c.el.scrollIntoView({ block: 'nearest', inline: 'center' }); }
   else if (scroll) portal.hub?.scrollIntoAnchor(c.el);
   drawRing(c);
 }
 function drawRing(c) {
   let { x, y, w, h } = c;
-  if (state.view === 'home') { const r = c.el.getBoundingClientRect(); x = r.left; y = r.top; w = r.width; h = r.height; }
+  if (state.view !== 'portal') { const r = c.el.getBoundingClientRect(); x = r.left; y = r.top; w = r.width; h = r.height; }
   else { const fresh = refind(portal.candidates(), c.el); if (fresh) ({ x, y, w, h } = fresh); }
   ring.hidden = false;
   ring.style.transform = `translate(${x}px, ${y}px)`;
   ring.style.width = `${w}px`; ring.style.height = `${h}px`;
 }
 function currentCandidates() {
-  if (state.view === 'home') {
-    return [...views.home.querySelectorAll('[data-focusable]')].map((el) => { const r = el.getBoundingClientRect(); return { el, x: r.left, y: r.top, w: r.width, h: r.height }; });
+  if (state.view !== 'portal') {
+    return [...views[state.view].querySelectorAll('[data-focusable]')].map((el) => { const r = el.getBoundingClientRect(); return { el, x: r.left, y: r.top, w: r.width, h: r.height }; });
   }
   return portal.candidates();
 }
@@ -58,7 +60,7 @@ function refreshFocus() {
 }
 function move(dir) {
   const t0 = performance.now();
-  views.home.querySelectorAll('.focused').forEach((e) => e.classList.remove('focused'));
+  document.querySelectorAll('.focused').forEach((e) => e.classList.remove('focused'));
   const cands = currentCandidates();
   const cur = state.focus && refind(cands, state.focus.el) || state.focus;
   const next = pickNext(cur, cands, dir);
@@ -93,12 +95,61 @@ function renderHome() {
   const byKind = (k) => items.filter((i) => i.kind === k).map((it) => tile({ id: it.id, title: it.title, sub: sub(it) }));
   const cont = progress.list().map((p) => tile({ key: p.key, id: p.itemId, portal: p.portalUrl, title: p.title, sub: `${fmtMin(p.d - p.t)} left`, pct: p.t / p.d }));
   const srcs = state.sources.map((s) => tile({ portal: s.home, title: s.name, sub: 'open portal', icon: '⌂' }));
-  for (const r of [row('Continue watching', cont), row('Sources', srcs), row('Movies', byKind('movie')), row('Series', byKind('series')), row('Episodes', byKind('episode'))]) if (r) rows.appendChild(r);
-  lazyArtwork();
+  const searchTile = tile({ title: 'Search', sub: `${items.length} titles`, icon: '⌕' }); searchTile.dataset.search = '';
+  for (const r of [row('Continue watching', cont), row('Sources', [searchTile, ...srcs]), row('Movies', byKind('movie')), row('Series', byKind('series')), row('Episodes', byKind('episode'))]) if (r) rows.appendChild(r);
+  lazyArtwork($('#rows'));
+}
+
+// ---------- search view ----------
+function renderKeyboard() {
+  const kb = $('#keyboard'); if (kb.children.length) return;
+  for (const keys of KEY_ROWS) {
+    const r = document.createElement('div'); r.className = 'krow';
+    for (const k of keys) {
+      const b = document.createElement('div');
+      b.className = 'key' + (k.length > 1 ? ' wide' : ''); b.dataset.focusable = ''; b.dataset.key = k;
+      b.textContent = { space: 'space', back: '⌫ back', clear: 'clear' }[k] || k;
+      r.appendChild(b);
+    }
+    kb.appendChild(r);
+  }
+}
+function openSearch() {
+  state.searchReturn = state.view === 'portal' ? 'home' : state.view;
+  renderKeyboard();
+  showView('search');
+  renderSearch();
+  const first = $('#keyboard .key'); const r = first.getBoundingClientRect();
+  setFocus({ el: first, x: r.left, y: r.top, w: r.width, h: r.height });
+}
+function setQuery(q) { state.query = q; renderSearch(); }
+function renderSearch() {
+  const qEl = $('#search-query');
+  qEl.textContent = ''; qEl.append(state.query, Object.assign(document.createElement('span'), { className: 'caret' }));
+  const rows = $('#search-rows'); rows.innerHTML = '';
+  if (!state.query) return;
+  const results = search(catalog.list(), state.query);
+  const sub = (it) => [it.year, it.kind, it.sources.map((s) => s.sourceId).join(', ')].filter(Boolean).join(' · ');
+  const r = row(`${results.length} result${results.length === 1 ? '' : 's'}`, results.map((it) => tile({ id: it.id, title: it.title, sub: sub(it) })));
+  if (r) rows.appendChild(r); else rows.innerHTML = '<div class="empty">No matches</div>';
+  lazyArtwork(rows);
+  if (state.focus && !document.contains(state.focus.el)) refreshFocus();
+}
+function typeChar(ch) { setQuery((state.query + ch).slice(0, 40)); }
+function searchKey(k) {
+  if (k === 'space') typeChar(' ');
+  else if (k === 'back') setQuery(state.query.slice(0, -1));
+  else if (k === 'clear') setQuery('');
+  else typeChar(k);
+}
+function searchSelect() {
+  const el = state.focus?.el; if (!el) return;
+  if (el.dataset.key) return searchKey(el.dataset.key);
+  if (el.dataset.id) { state.searchReturn = 'search'; return openItem(el.dataset.id); }
 }
 const fmtMin = (s) => `${Math.max(1, Math.round(s / 60))} min`;
 let artObserver;
-function lazyArtwork() {
+function lazyArtwork(container) {
   artObserver?.disconnect();
   artObserver = new IntersectionObserver((entries) => {
     for (const e of entries) {
@@ -108,8 +159,8 @@ function lazyArtwork() {
       const url = catalog.artworkUrl(it); if (!url) continue;
       art.get(url).then((obj) => { t.querySelector('.poster').style.backgroundImage = `url(${obj})`; }).catch(() => {});
     }
-  }, { root: $('#view-home'), rootMargin: '400px 600px' });
-  for (const t of $('#rows').querySelectorAll('.tile[data-id]')) artObserver.observe(t);
+  }, { root: container.closest('section'), rootMargin: '400px 600px' });
+  for (const t of container.querySelectorAll('.tile[data-id]')) artObserver.observe(t);
 }
 function portalPathFor(sourceId, absUrl) {
   const def = state.sources.find((s) => s.id === sourceId);
@@ -120,9 +171,13 @@ function portalPathFor(sourceId, absUrl) {
 }
 function homeSelect() {
   const el = state.focus?.el; if (!el) return;
+  if ('search' in el.dataset) return openSearch();
   if (el.dataset.key) { const p = progress.get(el.dataset.key); if (p) return openPortal(p.portalUrl, { key: el.dataset.key, title: p.title, itemId: p.itemId }); }
   if (el.dataset.portal) return openPortal(el.dataset.portal);
-  const it = catalog.items.get(el.dataset.id);
+  openItem(el.dataset.id);
+}
+function openItem(id) {
+  const it = catalog.items.get(id);
   const src = it?.sources.find((s) => s.itemUrl);
   if (!src) return say('No source URL for this title');
   openPortal(portalPathFor(src.sourceId, src.itemUrl), { key: it.id, title: it.title, itemId: it.id });
@@ -197,9 +252,12 @@ async function inspectHide() {
 function showView(name) {
   state.view = name;
   for (const [k, v] of Object.entries(views)) v.hidden = k !== name;
-  if (name === 'home') { clearInterval(state.portalTick); portal.frame.src = 'about:blank'; cursor.hide(); state.mode = 'spatial'; renderHome(); }
+  if (name !== 'portal') { clearInterval(state.portalTick); portal.frame.src = 'about:blank'; cursor.hide(); state.mode = 'spatial'; }
+  if (name === 'home') renderHome();
+  if (name === 'search') renderSearch();
   refreshFocus();
 }
+function leavePortal() { showView(state.searchReturn === 'search' ? 'search' : 'home'); state.searchReturn = 'home'; }
 function setMode(mode) {
   state.mode = mode;
   if (mode === 'cursor') { cursor.show(); ring.hidden = true; say('Cursor mode'); }
@@ -229,12 +287,14 @@ function dispatch(intent, { repeat, phase }) {
   if (state.mode === 'cursor' && ['up', 'down', 'left', 'right'].includes(intent)) { if (!repeat) cursor.press(intent); return; }
   switch (intent) {
     case 'up': case 'down': case 'left': case 'right': return move(intent);
-    case 'select': return state.view === 'home' ? homeSelect() : portalSelect();
+    case 'select': return state.view === 'home' ? homeSelect() : state.view === 'search' ? searchSelect() : portalSelect();
+    case 'search': if (state.view !== 'search') openSearch(); return;
     case 'back':
       if (repeat) return;
+      if (state.view === 'search') { if (state.query) setQuery(state.query.slice(0, -1)); else showView('home'); return; }
       if (state.view !== 'portal') return;
-      if (state.portalDepth > 1) { state.goingBack = true; try { portal.win.history.back(); } catch { showView('home'); } }
-      else showView('home');
+      if (state.portalDepth > 1) { state.goingBack = true; try { portal.win.history.back(); } catch { leavePortal(); } }
+      else leavePortal();
       return;
     case 'mode': case 'cursor': if (state.view === 'portal') setMode(state.mode === 'cursor' ? 'spatial' : 'cursor'); return;
     case 'play': case 'playpause': if (state.view === 'portal') startPlayback(); return;
@@ -254,6 +314,12 @@ function toggleHud() {
 // ---------- boot ----------
 async function boot() {
   registerPlatformKeys();
+  // Physical keyboard (desktop / USB keyboard on a TV): printable keys type into the search box.
+  // Registered before the intent router so letters mapped to intents (M, H, C, I) still type here.
+  window.addEventListener('keydown', (e) => {
+    if (state.view !== 'search' || e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
+    e.preventDefault(); e.stopImmediatePropagation(); typeChar(e.key.toLowerCase());
+  }, { capture: true });
   installKeyRouter(dispatch);
   portal.attachReadyListener();
   state.sources = await fetch('/api/sources').then((r) => r.json());
@@ -263,15 +329,16 @@ async function boot() {
   setInterval(async () => { try { if (await catalog.sync() && state.view === 'home') { renderHome(); refreshFocus(); } } catch {} }, 60_000);
   addEventListener('resize', () => { portal.layout(); refreshFocus(); });
   let ringRaf = 0;
-  const followScroll = () => { if (ringRaf) return; ringRaf = requestAnimationFrame(() => { ringRaf = 0; if (state.focus && state.view === 'home') drawRing(state.focus); }); };
+  const followScroll = () => { if (ringRaf) return; ringRaf = requestAnimationFrame(() => { ringRaf = 0; if (state.focus && state.view !== 'portal') drawRing(state.focus); }); };
   views.home.addEventListener('scroll', followScroll, { passive: true, capture: true });
+  views.search.addEventListener('scroll', followScroll, { passive: true, capture: true });
   window.addEventListener('message', (e) => {
     if (e.data?.type !== 'hub:ready') return;
     if (state.goingBack) { state.goingBack = false; state.portalDepth = Math.max(1, state.portalDepth - 1); } else state.portalDepth++;
     setTimeout(refreshFocus, 50);
   });
   // Desktop convenience: mouse click on a tile focuses and selects it.
-  views.home.addEventListener('click', (e) => { const t = e.target.closest('[data-focusable]'); if (!t) return; const r = t.getBoundingClientRect(); setFocus({ el: t, x: r.left, y: r.top, w: r.width, h: r.height }); homeSelect(); });
+  for (const v of [views.home, views.search]) v.addEventListener('click', (e) => { const t = e.target.closest('[data-focusable]'); if (!t) return; const r = t.getBoundingClientRect(); setFocus({ el: t, x: r.left, y: r.top, w: r.width, h: r.height }); state.view === 'home' ? homeSelect() : searchSelect(); });
 }
 boot();
 window.__app = { state, catalog, portal, player, dispatch, progress };

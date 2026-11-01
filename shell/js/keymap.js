@@ -20,7 +20,7 @@ export const KEYMAP = {
              85: 'playpause', 90: 'ff', 89: 'rw', 183: 'mode', 184: 'menu', 185: 'cursor', 165: 'info', 88: 'prev', 87: 'next' },
   // Desktop fallback for development: arrows, Enter, Escape/Backspace, and letters.
   desktop: { 38: 'up', 40: 'down', 37: 'left', 39: 'right', 13: 'select', 27: 'back', 8: 'back', 32: 'playpause',
-             190: 'ff', 188: 'rw', 77: 'mode', 72: 'menu', 67: 'cursor', 73: 'info', 219: 'prev', 221: 'next' },
+             190: 'ff', 188: 'rw', 77: 'mode', 72: 'menu', 67: 'cursor', 73: 'info', 219: 'prev', 221: 'next', 83: 'search', 191: 'search' },
 };
 
 /** Keys that TV OSes do not deliver until an app registers them. */
