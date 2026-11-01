@@ -103,7 +103,12 @@ async function route(req, res) {
     });
   }
 
-  if (p === '/' || p === '/index.html') return serveStatic(path.join(ROOT, 'shell'), 'index.html', req, res);
+  if (p === '/' || p === '/index.html') {
+    // The portal frame may only ever load hub-origin URLs. A page script that tries to send the
+    // frame to another site is refused by the browser before any request leaves the TV.
+    res.setHeader('content-security-policy', "frame-src 'self'; form-action 'self'; object-src 'none'");
+    return serveStatic(path.join(ROOT, 'shell'), 'index.html', req, res);
+  }
   if (p.startsWith('/shell/')) { if (await serveStatic(path.join(ROOT, 'shell'), p.slice(7), req, res)) return; }
   if (p.startsWith('/demo/')) { if (await serveStatic(path.join(ROOT, 'demo'), p.slice(6), req, res)) return; }
   res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');

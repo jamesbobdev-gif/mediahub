@@ -13,6 +13,13 @@ test('first-party URLs map under /p/, third-party under /x/', () => {
   assert.equal(proxy.hubUrlFor('https://cdn.test/a.js', s), '/x/demo/' + encodeURIComponent('https://cdn.test/a.js'));
 });
 
+test('meta refresh redirects are routed through the hub, never to an external site directly', () => {
+  const out = proxy.rewriteHtml('<html><head><meta http-equiv="refresh" content="0;url=https://evil.test/land"><meta http-equiv="refresh" content="2; URL=/app/next"></head></html>', sources.get('demo'), 'https://portal.test/app/index.html');
+  assert.doesNotMatch(out, /url=https:\/\/evil\.test/);
+  assert.match(out, /url=\/x\/demo\/https%3A%2F%2Fevil\.test%2Fland/);
+  assert.match(out, /URL=\/p\/demo\/next/);
+});
+
 test('html rewrite injects viewport, rules, content script and rewrites urls', () => {
   const out = proxy.rewriteHtml('<html><head><meta name="viewport" content="width=device-width"><link href="style.css" rel="stylesheet"></head><body><a href="/app/x">x</a><img src="https://cdn.test/i.png"><div style="background:url(bg.png)"></div></body></html>', sources.get('demo'), 'https://portal.test/app/index.html');
   assert.match(out, /<meta name="viewport" content="width=1280">/);

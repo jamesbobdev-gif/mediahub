@@ -58,6 +58,12 @@ export function createProxy({ sources, filters, log = () => {} }) {
     // Force the desktop layout width the portal was designed for; the shell scales the frame.
     html = html.replace(/<meta[^>]+name=["']viewport["'][^>]*>/gi, '');
     html = html.replace(/<base\s[^>]*>/gi, '');
+    // <meta http-equiv="refresh" content="0;url=..."> is a classic redirect vector: route it or drop it.
+    html = html.replace(/<meta([^>]+http-equiv=["']refresh["'][^>]*)>/gi, (m, attrs) => {
+      const u = attrs.match(/url\s*=\s*['"]?([^'">\s]+)/i);
+      if (!u) return m;
+      try { return m.replace(u[1], hubUrlFor(new URL(u[1], pageUrl).href, source)); } catch { return ''; }
+    });
     const head = [
       '<meta name="viewport" content="width=1280">',
       `<script>window.__HUB_RULES=${JSON.stringify({ sourceId: source.id, ...rules })};window.__HUB_ORIGIN=${JSON.stringify(source.originUrl.origin)};</script>`,
@@ -157,6 +163,11 @@ export function createProxy({ sources, filters, log = () => {} }) {
       const rewritten = isHtml ? rewriteHtml(text, source, upstream.href) : rewriteCssUrls(text, source, upstream.href);
       out['content-type'] = ctype;
       out['cache-control'] = 'no-store';
+      if (isHtml) {
+        // Everything the page loads must come from the hub origin (all URLs are rewritten to it, and
+        // the content script rewrites script-made requests). Direct loads from any other host are refused.
+        out['content-security-policy'] = "default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; frame-src 'self'; form-action 'self'; base-uri 'none'; object-src 'none'";
+      }
       res.writeHead(up.status, out);
       res.end(rewritten);
       return;

@@ -102,6 +102,21 @@ Rules are data, per source, in `config/sources.json`:
   that source's `css` rules through `PATCH /api/sources/<id>/rules`. Config is hot-reloaded, so
   rules written from the couch apply to every later page load without a restart.
 
+### Redirect and escape protection
+
+The viewer frame cannot leave the hub. Layers, outermost first:
+
+* The shell page is served with `Content-Security-Policy: frame-src 'self'`, so the browser itself
+  refuses any navigation of the portal frame to another origin, whatever script asked for it. The
+  shell notices the refused load, discards the frame, and reloads the last good page.
+* Proxied pages get `default-src 'self'`: every resource must come through the hub, where the
+  classifier runs. Static URLs are rewritten by the proxy; URLs set by scripts (`fetch`, XHR,
+  `img.src`, `script.src`, `setAttribute`) are rewritten by the content script. `meta refresh`
+  redirects are routed or dropped.
+* `window.open` to another origin returns null. Clicks on links to another origin are cancelled;
+  script-assigned links to the portal's own origin are routed. `_blank` becomes `_self`.
+* Overlays that catch stray remote clicks are removed before they can be clicked.
+
 ### 4. Ingestion
 
 * `server/ingest/adapters.js`: a generic JSON adapter driven by the manifest

@@ -197,7 +197,7 @@ function openItem(id) {
 // ---------- portal view ----------
 function openPortal(url, { key = null, title = null, itemId = null } = {}) {
   state.playKey = key; state.playTitle = title; state.playItemId = itemId;
-  state.portalDepth = 0; state.goingBack = false;
+  state.portalDepth = 0; state.goingBack = false; state.lastGoodUrl = url; state.blockedRedirects = 0;
   state.portalSource = (url.match(/^\/p\/([^/]+)/) || [])[1] || null;
   showView('portal');
   portal.load(url);
@@ -206,7 +206,21 @@ function openPortal(url, { key = null, title = null, itemId = null } = {}) {
 portal.onReady = () => {
   if (state.view !== 'portal' || portal.frame.src === 'about:blank') return;
   say('');
-  if (!portal.hub) { say('Portal is not same-origin; injection failed'); return; }
+  if (!portal.hub) {
+    // The frame ended up somewhere that is not a hub page: a redirect the browser refused (CSP) or an
+    // escape we could not rewrite. Never leave the TV there; go back to the last good page.
+    state.blockedRedirects = (state.blockedRedirects || 0) + 1;
+    say('Blocked a redirect to another site');
+    if (state.lastGoodUrl && state.blockedRedirects < 4) {
+      // The refused frame is stuck on an opaque error page; a fresh frame loads cleanly.
+      const url = state.lastGoodUrl; state.goingBack = true;
+      portal.recreate();
+      portal.load(url);
+    } else leavePortal();
+    return;
+  }
+  state.blockedRedirects = 0;
+  try { const l = portal.win.location; state.lastGoodUrl = l.pathname + l.search; } catch {}
   setTimeout(refreshFocus, 50);
   clearInterval(state.portalTick);
   state.portalTick = setInterval(() => { if (state.view === 'portal' && !player.active) refreshFocus(); }, 500);
@@ -319,7 +333,7 @@ function toggleHud() {
   if (hud.hidden) return;
   const p = (arr) => arr.length ? [50, 95].map((q) => `p${q}=${arr.slice().sort((a, b) => a - b)[Math.floor((q / 100) * (arr.length - 1))].toFixed(1)}ms`).join(' ') : 'n/a';
   const dec = portal.hub?.decisions || [];
-  hud.textContent = `platform=${PLATFORM} view=${state.view} mode=${state.mode} depth=${state.portalDepth}\nfocus latency ${p(state.metrics.focus)}\nportal decisions: ${dec.length} (${dec.filter((d) => d.kind === 'hide').length} hidden, ${dec.filter((d) => d.kind !== 'hide').length} popups)\n` + dec.slice(-8).map((d) => `  ${d.kind} ${d.reason || ''} ${d.tag || ''} ${d.cls || d.url || ''}`).join('\n');
+  hud.textContent = `platform=${PLATFORM} view=${state.view} mode=${state.mode} depth=${state.portalDepth}\nfocus latency ${p(state.metrics.focus)}\nportal decisions: ${dec.length} (${dec.filter((d) => d.kind === 'hide').length} hidden, ${dec.filter((d) => d.kind !== 'hide').length} popups/links blocked)\n` + dec.slice(-8).map((d) => `  ${d.kind} ${d.reason || ''} ${d.tag || ''} ${d.cls || d.url || ''}`).join('\n');
 }
 
 // ---------- boot ----------

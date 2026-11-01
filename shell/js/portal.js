@@ -36,12 +36,25 @@ export class PortalFrame {
   toFrame(x, y) { const b = this.frame.getBoundingClientRect(); return { x: (x - b.left) / this.scale, y: (y - b.top) / this.scale }; }
 
   attachReadyListener() {
-    this.frame.addEventListener('load', () => {
+    this._onLoad = () => {
       this.ready = true;
       this.onReady();
       const w = this.win; if (!w) return;
-      // In-frame navigation: re-run ready work and tell the app for history purposes.
       try { w.addEventListener('unload', () => { this.ready = false; }); } catch {}
-    });
+    };
+    this.frame.addEventListener('load', this._onLoad);
+  }
+
+  /** Replace the iframe with a fresh browsing context. Used after the browser refused a navigation
+   *  (CSP frame-src): the old frame is stuck on an opaque error page and will not load cleanly again. */
+  recreate() {
+    const old = this.frame;
+    const fresh = document.createElement('iframe');
+    for (const a of old.attributes) if (a.name !== 'src') fresh.setAttribute(a.name, a.value);
+    fresh.style.cssText = old.style.cssText;
+    old.replaceWith(fresh);
+    this.frame = fresh; this.ready = false;
+    this.attachReadyListener();
+    return fresh;
   }
 }

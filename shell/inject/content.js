@@ -17,18 +17,63 @@
     try { Object.defineProperty(window, 'ontouchstart', { get: () => undefined, set() {}, configurable: true }); } catch {}
   }
 
-  // ---- 2. Popup / pop-under suppression ----------------------------------------
+  // ---- 2. Every URL a script makes goes through the hub -------------------------
+  // Static markup is rewritten by the proxy; this covers URLs set at runtime (fetch, XHR, img.src,
+  // script.src, location changes). Portal-origin URLs map to /p/<source>/, anything else to /x/.
+  const SOURCE = RULES.sourceId, PORTAL_ORIGIN = window.__HUB_ORIGIN || '';
   const sameOrigin = (href) => { try { return new URL(href, location.href).origin === location.origin; } catch { return false; } };
+  function toHub(url) {
+    let u;
+    try { u = new URL(url, location.href); } catch { return url; }
+    if (u.origin === location.origin || !/^https?:$/.test(u.protocol)) return url;
+    if (PORTAL_ORIGIN && u.origin === PORTAL_ORIGIN) return `/p/${SOURCE}${u.pathname}${u.search}${u.hash}`;
+    return `/x/${SOURCE}/${encodeURIComponent(u.href)}`;
+  }
+  const realFetch = window.fetch;
+  window.fetch = function (input, init) {
+    if (typeof input === 'string' || input instanceof URL) return realFetch.call(window, toHub(String(input)), init);
+    if (input instanceof Request) return realFetch.call(window, new Request(toHub(input.url), input), init);
+    return realFetch.call(window, input, init);
+  };
+  const realXhrOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) { return realXhrOpen.call(this, method, toHub(String(url)), ...rest); };
+  for (const [Ctor, prop] of [[HTMLScriptElement, 'src'], [HTMLImageElement, 'src'], [HTMLIFrameElement, 'src'], [HTMLSourceElement, 'src'],
+                              [HTMLMediaElement, 'src'], [HTMLLinkElement, 'href'], [HTMLEmbedElement, 'src']]) {
+    const d = Object.getOwnPropertyDescriptor(Ctor.prototype, prop);
+    if (!d || !d.set) continue;
+    Object.defineProperty(Ctor.prototype, prop, { get: d.get, set(v) { d.set.call(this, toHub(String(v))); }, configurable: true });
+  }
+  const realSetAttribute = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function (name, value) {
+    const n = String(name).toLowerCase();
+    if ((n === 'src' || n === 'href' || n === 'data-src') && /^(https?:)?\/\//i.test(String(value))) value = toHub(String(value));
+    return realSetAttribute.call(this, name, value);
+  };
+
+  // ---- 3. Popup, pop-under and redirect suppression -----------------------------
+  // Navigation of this frame to any non-hub origin is also refused by the browser (CSP frame-src on
+  // the shell), so even a script that bypasses these hooks cannot take the TV elsewhere.
   const realOpen = window.open;
   window.open = function (url, ...rest) {
-    if (url && !sameOrigin(url) && !String(url).startsWith('/p/')) { decisions.push({ kind: 'popup', url: String(url) }); return null; }
+    if (url && !sameOrigin(url)) { decisions.push({ kind: 'popup', url: String(url) }); return null; }
     return realOpen.call(window, url, ...rest);
   };
   let lastClickAt = 0;
   document.addEventListener('click', (e) => {
     lastClickAt = performance.now();
-    const a = e.target && e.target.closest && e.target.closest('a[target="_blank"],a[rel~="sponsored"]');
-    if (a && !sameOrigin(a.href) && !a.href.startsWith(location.origin + '/p/')) { e.preventDefault(); e.stopImmediatePropagation(); decisions.push({ kind: 'blank-anchor', url: a.href }); }
+    const a = e.target && e.target.closest && e.target.closest('a[href]');
+    if (!a) return;
+    const href = a.getAttribute('href') || '';
+    if (/^(javascript|data|blob):/i.test(href)) return;
+    if (!sameOrigin(a.href)) {
+      // A script-assigned absolute link to the portal's own origin is routed through the hub;
+      // a link to any other site is a redirect attempt and is dropped.
+      const routed = toHub(a.href);
+      if (routed.startsWith(`/p/${SOURCE}`)) { a.setAttribute('href', routed); if (a.target === '_blank') a.target = '_self'; return; }
+      e.preventDefault(); e.stopImmediatePropagation(); decisions.push({ kind: 'blocked-link', url: a.href });
+    } else if (a.href.startsWith(location.origin + '/x/')) {
+      e.preventDefault(); e.stopImmediatePropagation(); decisions.push({ kind: 'blocked-link', url: a.href });
+    } else if (a.target === '_blank') a.target = '_self';
   }, true);
   // Navigation spawned within 100ms of a click to a different origin is a pop-under pattern.
   const realAssign = location.assign.bind(location);
@@ -36,7 +81,7 @@
     if (performance.now() - lastClickAt < 100 && document.activeElement && document.activeElement.tagName !== 'A') { e.preventDefault(); e.returnValue = ''; }
   });
 
-  // ---- 3. Clickable tracking for focus candidates -------------------------------
+  // ---- 3b. Clickable tracking for focus candidates ------------------------------
   const realAdd = EventTarget.prototype.addEventListener;
   EventTarget.prototype.addEventListener = function (type, fn, opts) {
     if ((type === 'click' || type === 'mousedown' || type === 'pointerdown') && this instanceof Element) this.__hubClickable = true;
