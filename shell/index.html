@@ -17,13 +17,14 @@
   </section>
 
   <section id="view-search" hidden>
-    <header class="home-header">
-      <h1>Search</h1>
-      <div id="search-query" class="query"><span class="caret"></span></div>
-      <div class="muted hint">type with the keys · Back deletes · Esc on empty returns home</div>
-    </header>
-    <div id="keyboard" class="keyboard"></div>
-    <div id="search-rows"></div>
+    <div class="search-layout">
+      <div class="search-panel">
+        <div class="query-box"><span class="query-icon">⌕</span><div id="search-query" class="query"><span class="caret"></span></div></div>
+        <div id="keyboard" class="keyboard"></div>
+        <div class="muted hint">Back deletes · Back on empty returns home</div>
+      </div>
+      <div id="search-rows" class="search-results"></div>
+    </div>
   </section>
 
   <section id="view-portal" hidden>

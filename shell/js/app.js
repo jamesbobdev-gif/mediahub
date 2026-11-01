@@ -38,6 +38,7 @@ function setFocus(c, { scroll = true } = {}) {
   drawRing(c);
 }
 function drawRing(c) {
+  if (c.el.classList?.contains('key')) { ring.hidden = true; return; }   // keys carry their own focus style
   let { x, y, w, h } = c;
   if (state.view !== 'portal') { const r = c.el.getBoundingClientRect(); x = r.left; y = r.top; w = r.width; h = r.height; }
   else { const fresh = refind(portal.candidates(), c.el); if (fresh) ({ x, y, w, h } = fresh); }
@@ -107,8 +108,8 @@ function renderKeyboard() {
     const r = document.createElement('div'); r.className = 'krow';
     for (const k of keys) {
       const b = document.createElement('div');
-      b.className = 'key' + (k.length > 1 ? ' wide' : ''); b.dataset.focusable = ''; b.dataset.key = k;
-      b.textContent = { space: 'space', back: '⌫ back', clear: 'clear' }[k] || k;
+      b.className = 'key' + (k.length > 1 ? ' wide ' + k : ''); b.dataset.focusable = ''; b.dataset.key = k;
+      b.textContent = { space: 'space', back: '⌫  delete', clear: '✕  clear' }[k] || k;
       r.appendChild(b);
     }
     kb.appendChild(r);
@@ -127,11 +128,11 @@ function renderSearch() {
   const qEl = $('#search-query');
   qEl.textContent = ''; qEl.append(state.query, Object.assign(document.createElement('span'), { className: 'caret' }));
   const rows = $('#search-rows'); rows.innerHTML = '';
-  if (!state.query) return;
+  if (!state.query) { rows.innerHTML = `<div class="search-hint">Search ${catalog.items.size} titles across ${state.sources.length} source${state.sources.length === 1 ? '' : 's'}. Results appear as you type; typos are fine.</div>`; return; }
   const results = search(catalog.list(), state.query);
   const sub = (it) => [it.year, it.kind, it.sources.map((s) => s.sourceId).join(', ')].filter(Boolean).join(' · ');
-  const r = row(`${results.length} result${results.length === 1 ? '' : 's'}`, results.map((it) => tile({ id: it.id, title: it.title, sub: sub(it) })));
-  if (r) rows.appendChild(r); else rows.innerHTML = '<div class="empty">No matches</div>';
+  const r = row(`${results.length} result${results.length === 1 ? '' : 's'} for “${state.query}”`, results.map((it) => tile({ id: it.id, title: it.title, sub: sub(it) })));
+  if (r) rows.appendChild(r); else rows.innerHTML = `<div class="empty">Nothing matches “${state.query}”</div>`;
   lazyArtwork(rows);
   if (state.focus && !document.contains(state.focus.el)) refreshFocus();
 }

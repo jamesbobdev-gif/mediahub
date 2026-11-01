@@ -3,12 +3,11 @@
 // (Jaro-Winkler on the whole title, for D-pad typos like "harbor").
 
 export const KEY_ROWS = [
-  'a b c d e f g'.split(' '),
-  'h i j k l m n'.split(' '),
-  'o p q r s t u'.split(' '),
-  'v w x y z 1 2'.split(' '),
-  '3 4 5 6 7 8 9'.split(' '),
-  ['0', 'space', 'back', 'clear'],
+  '1 2 3 4 5 6 7 8 9 0'.split(' '),
+  'q w e r t y u i o p'.split(' '),
+  'a s d f g h j k l'.split(' '),
+  'z x c v b n m'.split(' '),
+  ['space', 'back', 'clear'],
 ];
 
 const norm = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
