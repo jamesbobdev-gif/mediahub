@@ -1,4 +1,6 @@
 {
+  "strict": true,
+  "allowHosts": [],
   "hosts": [
     "(^|\\.)doubleclick\\.net$",
     "(^|\\.)googlesyndication\\.com$",

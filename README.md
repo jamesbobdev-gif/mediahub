@@ -75,6 +75,7 @@ On Windows PowerShell 5.1 use `;` rather than `&&` to chain commands.
 Rules are data, per source, in `config/sources.json`:
 
 ```json
+"allowHosts": ["(^|\\.)cdn\\.portal-a\\.example$"],
 "rules": {
   "css": [".hero-slider", "#top-banner", "[class*='cookie']"],
   "removeOnMount": [".interstitial"],
@@ -113,9 +114,22 @@ The viewer frame cannot leave the hub. Layers, outermost first:
   classifier runs. Static URLs are rewritten by the proxy; URLs set by scripts (`fetch`, XHR,
   `img.src`, `script.src`, `setAttribute`) are rewritten by the content script. `meta refresh`
   redirects are routed or dropped.
+* **Strict third-party blocking** (`config/filters.json`, `strict: true` by default): scripts,
+  frames and data calls to any domain other than the portal's own are answered with placeholders,
+  whether or not the domain is on an ad list. Images, video, fonts and stylesheets from CDNs stay
+  allowed. If a portal genuinely needs a host (its player CDN, its API), add it to that source's
+  `allowHosts` or the global `allowHosts`. `/api/status` lists what was blocked and why.
 * `window.open` to another origin returns null. Clicks on links to another origin are cancelled;
   script-assigned links to the portal's own origin are routed. `_blank` becomes `_self`.
 * Overlays that catch stray remote clicks are removed before they can be clicked.
+* The proxy never fetches from loopback, link-local or private (home network) addresses on behalf
+  of a page, unless the source itself is hosted there. Cookies are prefixed per source and only
+  sent back to that source; third parties cannot set cookies on the TV.
+
+**Threat model.** The hub is a home-LAN appliance with no authentication: anyone on your network can
+browse through it and change rules. Do not expose port 8787 to the internet. Portal JavaScript still
+runs inside the TV browser (locked to the hub origin by CSP), so keep the TV's firmware updated as
+you would for any browsing, and only configure sources you trust.
 
 ### 4. Ingestion
 

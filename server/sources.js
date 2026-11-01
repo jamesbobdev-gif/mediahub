@@ -6,6 +6,8 @@ function prepare(s) {
   if (!s.id || !s.origin) throw new Error(`source missing id/origin: ${JSON.stringify(s)}`);
   s.originUrl = new URL(s.origin);
   s.rules = Object.assign({}, RULE_DEFAULTS, s.rules || {});
+  // Per-source exceptions to strict third-party blocking, e.g. the portal's CDN or API host.
+  s.allowHostsRe = (s.allowHosts || []).map((p) => new RegExp(p, 'i'));
   return s;
 }
 

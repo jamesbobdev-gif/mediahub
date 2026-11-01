@@ -22,6 +22,18 @@ test('third-party iframes block, third-party media does not', () => {
   assert.equal(classify(f, 'https://cdn.test/stream.m3u8', { destination: 'media', firstParty: false }).block, false);
 });
 
+test('strict mode blocks third-party scripts and data calls unless the host is allowed', () => {
+  assert.ok(classify(f, 'https://unknown-cdn.test/player.js', { destination: 'script', firstParty: false }).block);
+  assert.ok(classify(f, 'https://api.other.test/v1/x', { destination: 'xhr', firstParty: false }).block);
+  assert.equal(classify(f, 'https://portal.test/js/app.js', { destination: 'script', firstParty: true }).block, false);
+  assert.equal(classify(f, 'https://img.cdn.test/p.jpg', { destination: 'image', firstParty: false }).block, false);
+  assert.equal(classify(f, 'https://fonts.cdn.test/a.woff2', { destination: 'font', firstParty: false }).block, false);
+  const allowed = classify(f, 'https://player.cdn.test/player.js', { destination: 'script', firstParty: false, allowHosts: [/(^|\.)cdn\.test$/] });
+  assert.equal(allowed.block, false);
+  const lax = compileFilters({ strict: false });
+  assert.equal(classify(lax, 'https://unknown-cdn.test/player.js', { destination: 'script', firstParty: false }).block, false);
+});
+
 test('placeholders are well-formed per destination', () => {
   assert.match(placeholderFor('script').type, /javascript/);
   assert.equal(placeholderFor('image').type, 'image/png');

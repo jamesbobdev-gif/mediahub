@@ -20,8 +20,13 @@ export function compileFilters(raw) {
     hosts: (raw.hosts || []).map((p) => new RegExp(p, 'i')),
     paths: (raw.paths || []).map((p) => new RegExp(p, 'i')),
     adSizes: new Set((raw.adSizes || []).map(([w, h]) => `${w}x${h}`)),
+    // Strict mode: third-party scripts, frames and data calls are blocked unless the host is allowed.
+    strict: raw.strict !== false,
+    allowHosts: (raw.allowHosts || []).map((p) => new RegExp(p, 'i')),
   };
 }
+
+const STRICT_DESTINATIONS = new Set(['script', 'iframe', 'xhr', 'other', 'document']);
 
 // destination: 'document' | 'script' | 'style' | 'image' | 'iframe' | 'xhr' | 'media' | 'font' | 'other'
 export function destinationFor(headers, url) {
@@ -45,7 +50,7 @@ export function destinationFor(headers, url) {
 /**
  * @returns {{block: boolean, reason?: string, destination: string}}
  */
-export function classify(filters, url, { destination = 'other', firstParty = true } = {}) {
+export function classify(filters, url, { destination = 'other', firstParty = true, allowHosts = [] } = {}) {
   let u;
   try { u = new URL(url); } catch { return { block: false, destination }; }
   const host = u.hostname;
@@ -54,10 +59,13 @@ export function classify(filters, url, { destination = 'other', firstParty = tru
   for (const re of filters.hosts) if (re.test(host)) return { block: true, reason: `host:${re.source}`, destination };
   for (const re of filters.paths) if (re.test(full)) return { block: true, reason: `path:${re.source}`, destination };
 
-  // Third-party iframes are almost never content on an aggregator; media and
-  // fonts almost always are, even from a CDN. Images with ad-unit dimensions in
-  // the query string are a strong signal.
-  if (!firstParty && destination === 'iframe') return { block: true, reason: 'third-party-iframe', destination };
+  // Strict mode: code and data from any other domain is blocked unless that domain is allowed for
+  // this source (its CDN, its API). Images, media, fonts and stylesheets from CDNs stay allowed.
+  if (!firstParty && STRICT_DESTINATIONS.has(destination)) {
+    const allowed = [...(filters.allowHosts || []), ...allowHosts].some((re) => re.test(host));
+    if (filters.strict && !allowed) return { block: true, reason: `third-party-${destination}:${host}`, destination };
+    if (destination === 'iframe' && !allowed) return { block: true, reason: 'third-party-iframe', destination };
+  }
   const w = u.searchParams.get('w') || u.searchParams.get('width');
   const h = u.searchParams.get('h') || u.searchParams.get('height');
   if (w && h && filters.adSizes.has(`${w}x${h}`)) return { block: true, reason: `ad-size:${w}x${h}`, destination };

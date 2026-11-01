@@ -15,6 +15,36 @@ const STRIP_RESPONSE = new Set([
 ]);
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36 MediaHub/0.1';
 
+/** Loopback, link-local and RFC1918 ranges, plus bare hostnames: a page must never be able to make
+ *  the hub fetch from the home network. A source whose own origin is private (the local demo) is exempt. */
+export function isPrivateHost(hostname) {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || !h.includes('.') && !h.includes(':')) return true;
+  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  }
+  if (h.includes(':')) return h === '::1' || h === '::' || /^f[cd]/.test(h) || /^fe[89ab]/.test(h) || h.startsWith('::ffff:');
+  return false;
+}
+
+/** Cookie isolation: every portal shares the hub origin on the TV, so cookie names are prefixed per
+ *  source on the way in and only that source's cookies are forwarded on the way out. */
+const cookiePrefix = (source) => `s_${source.id}__`;
+export function scopeSetCookie(header, source) {
+  return header.replace(/^\s*([^=;\s]+)=/, (m, name) => `${cookiePrefix(source)}${name}=`)
+    .replace(/;\s*domain=[^;]*/i, '').replace(/;\s*secure/i, '').replace(/;\s*samesite=none/i, '');
+}
+export function unscopeCookieHeader(header, source) {
+  const p = cookiePrefix(source);
+  const out = [];
+  for (const part of String(header || '').split(/;\s*/)) {
+    if (part.startsWith(p)) out.push(part.slice(p.length));
+  }
+  return out.join('; ');
+}
+
 export function createProxy({ sources, filters, log = () => {} }) {
   const stats = { requests: 0, blocked: 0, byReason: new Map() };
 
@@ -101,6 +131,9 @@ export function createProxy({ sources, filters, log = () => {} }) {
       if (!source) return null;
       let upstream;
       try { upstream = new URL(decodeURIComponent(m[2]) + url.search); } catch { return null; }
+      if (!/^https?:$/.test(upstream.protocol)) return null;
+      // Third-party fetches may not reach the home network (unless the source itself lives there).
+      if (isPrivateHost(upstream.hostname) && upstream.hostname !== source.originUrl.hostname) return { forbidden: `private host ${upstream.hostname}` };
       return { source, upstream, firstParty: upstream.origin === source.originUrl.origin };
     }
     return null;
@@ -109,9 +142,10 @@ export function createProxy({ sources, filters, log = () => {} }) {
   async function handle(req, res) {
     const r = resolve(req);
     if (!r) { res.writeHead(404).end('unknown source'); return; }
+    if (r.forbidden) { stats.blocked++; log('forbidden', r.forbidden, req.url); res.writeHead(403, { 'x-hub-blocked': r.forbidden }).end(); return; }
     const { source, upstream, firstParty } = r;
     const destination = destinationFor(req.headers, upstream.href);
-    const verdict = classify(filters, upstream.href, { destination, firstParty });
+    const verdict = classify(filters, upstream.href, { destination, firstParty, allowHosts: source.allowHostsRe || [] });
     record(verdict);
     if (verdict.block) {
       const ph = placeholderFor(destination);
@@ -127,8 +161,13 @@ export function createProxy({ sources, filters, log = () => {} }) {
       'accept-language': req.headers['accept-language'] || 'en',
       'referer': `${source.originUrl.origin}${source.originUrl.pathname}`,
     };
-    for (const h of ['range', 'cookie', 'content-type', 'if-none-match', 'if-modified-since']) {
+    for (const h of ['range', 'content-type', 'if-none-match', 'if-modified-since']) {
       if (req.headers[h]) headers[h] = req.headers[h];
+    }
+    // Cookies: only this source's own cookies, and only to the portal itself, never to third parties.
+    if (firstParty && req.headers['cookie']) {
+      const scoped = unscopeCookieHeader(req.headers['cookie'], source);
+      if (scoped) headers['cookie'] = scoped;
     }
 
     let body;
@@ -149,10 +188,8 @@ export function createProxy({ sources, filters, log = () => {} }) {
       if (k === 'location') { out[k] = hubUrlFor(new URL(v, upstream).href, source); continue; }
       out[k] = v;
     }
-    const cookies = up.headers.getSetCookie?.() || [];
-    if (cookies.length) {
-      out['set-cookie'] = cookies.map((c) => c.replace(/;\s*domain=[^;]*/i, '').replace(/;\s*secure/i, '').replace(/;\s*samesite=none/i, ''));
-    }
+    const cookies = firstParty ? (up.headers.getSetCookie?.() || []) : [];   // third parties set no cookies on the TV
+    if (cookies.length) out['set-cookie'] = cookies.map((c) => scopeSetCookie(c, source));
     out['x-hub-source'] = source.id;
 
     const ctype = (up.headers.get('content-type') || '').toLowerCase();
