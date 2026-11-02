@@ -1,0 +1,16 @@
+[Unit]
+Description=Media Hub (TV web viewer, proxy and catalog)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/mediahub
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+RestartSec=3
+Environment=HUB_QUIET=1
+Environment=PORT=8787
+
+[Install]
+WantedBy=multi-user.target

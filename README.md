@@ -18,6 +18,9 @@ TV app shell (owns focus + remote)            Node hub (LAN box / NAS / Pi)
 └──────────────────────────────┘              └───────────────────────────────┘
 ```
 
+**Setting this up at home on a Raspberry Pi and a TV?** Read [docs/SETUP.md](docs/SETUP.md). It has
+diagrams, a one-command Pi installer, how to lock the hub to your TV, and troubleshooting.
+
 ## Quick start
 
 ```bash
