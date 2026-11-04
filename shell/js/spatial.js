@@ -8,7 +8,7 @@ export function pickNext(current, candidates, dir) {
   const cx = current.x + current.w / 2, cy = current.y + current.h / 2;
   let best = null, bestScore = Infinity;
   for (const c of candidates) {
-    if (c.el === current.el) continue;
+    if (current.id != null ? c.id === current.id : c.el === current.el) continue;
     const ccx = c.x + c.w / 2, ccy = c.y + c.h / 2;
     let primary, secondary, overlap;
     switch (dir) {
@@ -39,7 +39,9 @@ export function nearestToOrigin(candidates) {
   return best || candidates[0] || null;
 }
 
-/** Find the candidate whose element matches, after rects were recomputed. */
-export function refind(candidates, el) {
-  return candidates.find((c) => c.el === el) || null;
+/** Find the same candidate after rects were recomputed: by stable id (portal) or element (shell). */
+export function refind(candidates, ref) {
+  if (!ref) return null;
+  if (ref.id != null) return candidates.find((c) => c.id === ref.id) || null;
+  return candidates.find((c) => c.el === ref.el) || null;
 }

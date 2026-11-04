@@ -2,8 +2,8 @@
   {
     "id": "demo",
     "name": "Demo Portal",
-    "origin": "http://127.0.0.1:8787/demo/portal",
-    "home": "/index.html",
+    "origin": "http://127.0.0.1:8787",
+    "home": "/demo/portal/index.html",
     "intervalSec": 600,
     "feed": {
       "url": "http://127.0.0.1:8787/demo/feed.json",
@@ -43,8 +43,8 @@
   {
     "id": "demo-html",
     "name": "Demo HTML List",
-    "origin": "http://127.0.0.1:8787/demo/portal",
-    "home": "/index.html",
+    "origin": "http://127.0.0.1:8787",
+    "home": "/demo/portal/index.html",
     "intervalSec": 600,
     "feed": {
       "type": "html",

@@ -1,14 +1,19 @@
 // Injected into every proxied portal page, before the portal's own scripts.
-// Responsibilities: desktop-layout commitment, popup suppression, noise removal
-// that preserves grid geometry, scroll-root forwarding for infinite scroll, and a
-// small same-origin API (window.__hub) the shell drives for spatial navigation.
+// The page lives on the portal origin; the shell lives on the hub origin. They talk only through
+// postMessage, so nothing a portal script does can reach the shell, its storage or the hub API.
+// Responsibilities here: desktop-layout commitment, routing every runtime URL through the hub,
+// popup/redirect suppression, noise removal that preserves grid geometry, scroll-root forwarding,
+// focus candidates for spatial navigation, and the in-frame player takeover.
 (function () {
   'use strict';
   const RULES = Object.assign({ css: [], removeOnMount: [], preserve: [], scrollRoot: null, player: 'video', touch: false }, window.__HUB_RULES || {});
+  const SHELL = window.__HUB_SHELL || '';
+  const SOURCE = RULES.sourceId, PORTAL_ORIGIN = window.__HUB_ORIGIN || '';
   const PRESERVE = RULES.preserve.join(',') || null;
   const REMOVE = RULES.removeOnMount.join(',') || null;
   const AD_RATIOS = [[300, 250], [728, 90], [320, 50], [160, 600], [970, 250], [300, 600], [336, 280]];
   const decisions = [];
+  const send = (msg) => { try { parent.postMessage(msg, SHELL || '*'); } catch {} };
 
   // ---- 1. Commit the portal to its desktop layout ------------------------------
   if (!RULES.touch) {
@@ -18,14 +23,14 @@
   }
 
   // ---- 2. Every URL a script makes goes through the hub -------------------------
-  // Static markup is rewritten by the proxy; this covers URLs set at runtime (fetch, XHR, img.src,
-  // script.src, location changes). Portal-origin URLs map to /p/<source>/, anything else to /x/.
-  const SOURCE = RULES.sourceId, PORTAL_ORIGIN = window.__HUB_ORIGIN || '';
   const sameOrigin = (href) => { try { return new URL(href, location.href).origin === location.origin; } catch { return false; } };
+  const HUB_PATHS = /^\/(p|x)\/|^\/shell\/inject\//;
   function toHub(url) {
     let u;
     try { u = new URL(url, location.href); } catch { return url; }
-    if (u.origin === location.origin || !/^https?:$/.test(u.protocol)) return url;
+    if (!/^https?:$/.test(u.protocol)) return url;
+    // Root-relative URLs ("/api/list") are relative to the portal, not to the hub: map them under /p/<source>/.
+    if (u.origin === location.origin) return HUB_PATHS.test(u.pathname) ? url : `/p/${SOURCE}${u.pathname}${u.search}${u.hash}`;
     if (PORTAL_ORIGIN && u.origin === PORTAL_ORIGIN) return `/p/${SOURCE}${u.pathname}${u.search}${u.hash}`;
     return `/x/${SOURCE}/${encodeURIComponent(u.href)}`;
   }
@@ -51,23 +56,17 @@
   };
 
   // ---- 3. Popup, pop-under and redirect suppression -----------------------------
-  // Navigation of this frame to any non-hub origin is also refused by the browser (CSP frame-src on
-  // the shell), so even a script that bypasses these hooks cannot take the TV elsewhere.
   const realOpen = window.open;
   window.open = function (url, ...rest) {
     if (url && !sameOrigin(url)) { decisions.push({ kind: 'popup', url: String(url) }); return null; }
     return realOpen.call(window, url, ...rest);
   };
-  let lastClickAt = 0;
   document.addEventListener('click', (e) => {
-    lastClickAt = performance.now();
     const a = e.target && e.target.closest && e.target.closest('a[href]');
     if (!a) return;
     const href = a.getAttribute('href') || '';
     if (/^(javascript|data|blob):/i.test(href)) return;
     if (!sameOrigin(a.href)) {
-      // A script-assigned absolute link to the portal's own origin is routed through the hub;
-      // a link to any other site is a redirect attempt and is dropped.
       const routed = toHub(a.href);
       if (routed.startsWith(`/p/${SOURCE}`)) { a.setAttribute('href', routed); if (a.target === '_blank') a.target = '_self'; return; }
       e.preventDefault(); e.stopImmediatePropagation(); decisions.push({ kind: 'blocked-link', url: a.href });
@@ -75,11 +74,6 @@
       e.preventDefault(); e.stopImmediatePropagation(); decisions.push({ kind: 'blocked-link', url: a.href });
     } else if (a.target === '_blank') a.target = '_self';
   }, true);
-  // Navigation spawned within 100ms of a click to a different origin is a pop-under pattern.
-  const realAssign = location.assign.bind(location);
-  window.addEventListener('beforeunload', (e) => {
-    if (performance.now() - lastClickAt < 100 && document.activeElement && document.activeElement.tagName !== 'A') { e.preventDefault(); e.returnValue = ''; }
-  });
 
   // ---- 3b. Clickable tracking for focus candidates ------------------------------
   const realAdd = EventTarget.prototype.addEventListener;
@@ -109,7 +103,7 @@
   function hide(el, reason) {
     if (el.classList.contains('hub-hidden') || el.classList.contains('hub-placeholder')) return;
     decisions.push({ kind: 'hide', reason, tag: el.tagName, cls: el.className && String(el.className).slice(0, 60) });
-    if (isGridCell(el)) { el.replaceWith(placeholderFor(el)); return; }   // keep neighbours in place
+    if (isGridCell(el)) { el.replaceWith(placeholderFor(el)); return; }
     el.classList.add('hub-hidden');
   }
   function heuristicScore(el) {
@@ -126,7 +120,6 @@
     if (el.querySelector('video')) score -= 10;
     const text = (el.textContent || '').trim();
     if (text.length > 200 && !fixed) score -= 3;
-    // Navigation chrome (several links) is not an overlay even when fixed; playback mode un-fixes it instead.
     if (el.querySelectorAll('a[href]').length >= 2) score -= 2;
     const media = el.matches('iframe,img') ? el : el.querySelector('iframe,img');
     if (media) {
@@ -151,12 +144,10 @@
       scheduled = false;
       const batch = [...pending]; pending.clear();
       for (const el of batch) { evaluate(el); if (el.children.length < 50) for (const c of el.children) evaluate(c); }
-      rectsDirty = true;
+      markDirty();
     });
   }
   const mo = new MutationObserver((muts) => { for (const m of muts) schedule(m.addedNodes); });
-  // An image that resolved to the proxy's 1x1 placeholder is a neutralised ad: collapse its slot,
-  // replacing a grid cell with a same-size placeholder so neighbours keep their position.
   document.addEventListener('load', (e) => {
     const img = e.target;
     if (!(img instanceof HTMLImageElement) || img.naturalWidth !== 1 || img.naturalHeight !== 1) return;
@@ -175,72 +166,68 @@
     if (!scrollRoot) return;
     document.documentElement.classList.add('hub-has-scroll-root');
     scrollRoot.classList.add('hub-scroll-root');
-    const forward = () => { window.dispatchEvent(new Event('scroll')); rectsDirty = true; };
-    scrollRoot.addEventListener('scroll', forward, { passive: true });
+    scrollRoot.addEventListener('scroll', () => { window.dispatchEvent(new Event('scroll')); markDirty(); }, { passive: true });
     const def = (obj, prop, get) => { try { Object.defineProperty(obj, prop, { get, configurable: true }); } catch {} };
     def(window, 'scrollY', () => scrollRoot.scrollTop);
     def(window, 'pageYOffset', () => scrollRoot.scrollTop);
     def(document.documentElement, 'scrollTop', () => scrollRoot.scrollTop);
     def(document.documentElement, 'scrollHeight', () => scrollRoot.scrollHeight);
     def(document.documentElement, 'clientHeight', () => scrollRoot.clientHeight);
-    const realScrollTo = window.scrollTo.bind(window);
     window.scrollTo = (x, y) => { if (typeof x === 'object') scrollRoot.scrollTo(x); else scrollRoot.scrollTo(x, y); };
     window.scrollBy = (x, y) => scrollRoot.scrollBy(x, y);
   }
 
-  // ---- 6. Shell-facing API ------------------------------------------------------
-  let rectsDirty = true, rectCache = [];
+  // ---- 6. Focus candidates, pushed to the shell ---------------------------------
   const FOCUSABLE = 'a[href],button,[tabindex]:not([tabindex="-1"]),[role="button"],[role="link"],input,select,textarea,summary,video';
+  const ids = new WeakMap(); const byId = new Map(); let nextId = 1;
+  const idOf = (el) => { let id = ids.get(el); if (!id) { id = nextId++; ids.set(el, id); } byId.set(id, el); return id; };
+  const elOf = (id) => { const el = byId.get(id); return el && el.isConnected ? el : null; };
   function visible(el, r) {
     if (!r.width || !r.height) return false;
     if (r.bottom < -200 || r.top > innerHeight + 200) return false;
     const cs = getComputedStyle(el);
     return cs.visibility !== 'hidden' && cs.display !== 'none' && cs.pointerEvents !== 'none';
   }
-  function candidates() {
-    if (!rectsDirty) return rectCache;
-    const out = [];
-    const all = document.querySelectorAll(FOCUSABLE);
-    const seen = new Set();
+  function snapshot() {
+    const out = []; const seen = new Set();
     const push = (el) => {
       if (seen.has(el) || el.closest('.hub-hidden,.hub-placeholder')) return;
-      // Collapse nested focusables (a > img wrapped by a card with its own listener) to the outermost card.
       const r = el.getBoundingClientRect();
       if (!visible(el, r)) return;
       seen.add(el);
-      out.push({ el, x: r.left, y: r.top, w: r.width, h: r.height });
+      out.push({ id: idOf(el), x: r.left, y: r.top, w: r.width, h: r.height, tag: el.tagName });
     };
-    for (const el of all) push(el);
+    for (const el of document.querySelectorAll(FOCUSABLE)) push(el);
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
     for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.__hubClickable && !n.closest(FOCUSABLE)) push(n);
-    rectCache = out; rectsDirty = false;
     return out;
+  }
+  let dirty = true, pushScheduled = false;
+  function pushCandidates() { send({ type: 'hub:candidates', list: snapshot(), href: location.pathname + location.search }); dirty = false; }
+  function markDirty() {
+    dirty = true;
+    if (pushScheduled) return;
+    pushScheduled = true;
+    requestAnimationFrame(() => { pushScheduled = false; if (dirty) pushCandidates(); });
   }
   function activate(el) {
     const r = el.getBoundingClientRect();
     const x = r.left + r.width / 2, y = r.top + r.height / 2;
     const common = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
-    // Many portals bind mousedown only; send the full sequence.
     for (const [Ctor, type] of [[PointerEvent, 'pointerdown'], [MouseEvent, 'mousedown'], [PointerEvent, 'pointerup'], [MouseEvent, 'mouseup']]) {
       try { el.dispatchEvent(new Ctor(type, { ...common, pointerId: 1, isPrimary: true, button: 0 })); } catch {}
     }
     if (el.matches('input,select,textarea')) { el.focus(); return; }
     el.click();
+    setTimeout(markDirty, 150);
   }
   function scrollIntoAnchor(el) {
-    // Keep the focused row at ~40% from the top so the infinite-scroll sentinel is reached early.
     const r = el.getBoundingClientRect();
-    const target = innerHeight * 0.4;
-    const delta = r.top - target;
+    const delta = r.top - innerHeight * 0.4;
     if (Math.abs(delta) < 8) return;
-    if (scrollRoot) scrollRoot.scrollBy({ top: delta, behavior: 'auto' });
-    else window.scrollBy({ top: delta, behavior: 'auto' });
-    rectsDirty = true;
+    (scrollRoot || window).scrollBy({ top: delta, behavior: 'auto' });
+    markDirty();
   }
-  function findVideo() { return document.querySelector(RULES.player) || document.querySelector('video'); }
-  function setPlayback(on) { document.documentElement.classList.toggle('hub-playback', !!on); rectsDirty = true; }
-
-  // Stable-ish CSS selector for the rule inspector: id, else tag.classes chain up to three levels.
   function selectorFor(el) {
     const part = (e) => {
       if (e.id && !/\d{3,}/.test(e.id)) return '#' + CSS.escape(e.id);
@@ -254,42 +241,130 @@
       return sel;
     };
     const chain = [];
-    for (let e = el, i = 0; e && e !== document.body && i < 3; e = e.parentElement, i++) {
-      chain.unshift(part(e));
-      if (e.id) break;
-    }
+    for (let e = el, i = 0; e && e !== document.body && i < 3; e = e.parentElement, i++) { chain.unshift(part(e)); if (e.id) break; }
     return chain.join(' > ');
   }
-  /** User-driven hide: pick the largest ancestor that is still not a preserved/grid container, hide it, return its selector. */
   function hideUser(el) {
     let target = el;
     for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
       if ((PRESERVE && p.matches(PRESERVE)) || p.querySelector('video')) break;
       const pr = p.getBoundingClientRect(), tr = target.getBoundingClientRect();
-      if (pr.width * pr.height > tr.width * tr.height * 1.5) break;   // parent is much bigger: stop
+      if (pr.width * pr.height > tr.width * tr.height * 1.5) break;
       target = p;
     }
     const selector = selectorFor(target);
     hide(target, 'user');
+    markDirty();
     return selector;
   }
 
-  window.__hub = {
-    candidates, activate, scrollIntoAnchor, findVideo, setPlayback, selectorFor, hideUser,
-    invalidate() { rectsDirty = true; },
-    decisions,
-    scrollBy(dy) { (scrollRoot || window).scrollBy({ top: dy }); rectsDirty = true; },
-    elementAt(x, y) { return document.elementFromPoint(x, y); },
+  // ---- 7. In-frame player takeover ----------------------------------------------
+  // The video is reparented into an overlay inside this document (keeps the decoder alive) and
+  // controlled here; the shell only renders the OSD from the state we send it.
+  const player = {
+    video: null, home: null, overlay: null, pendingSeek: null, seekTimer: null, scanRate: 1, scanTimer: null, hadControls: false, lastSent: 0,
+    get active() { return !!this.video; },
+    attach(video, { resumeAt = 0 } = {}) {
+      if (this.video) this.detach();
+      this.video = video; this.home = { parent: video.parentNode, next: video.nextSibling };
+      const overlay = document.createElement('div');
+      overlay.className = 'hub-player-overlay';
+      overlay.style.cssText = 'position:fixed;inset:0;background:#000;z-index:2147483646;display:flex;align-items:center;justify-content:center;';
+      video.style.cssText += ';width:100%;height:100%;object-fit:contain;max-width:none;max-height:none;';
+      this.hadControls = video.controls; video.controls = false;
+      overlay.appendChild(video); document.body.appendChild(overlay); this.overlay = overlay;
+      document.documentElement.classList.add('hub-playback');
+      if (resumeAt > 0) {
+        const seek = () => { if (typeof video.fastSeek === 'function') video.fastSeek(resumeAt); else video.currentTime = resumeAt; };
+        if (video.readyState >= 1) seek(); else video.addEventListener('loadedmetadata', seek, { once: true });
+      }
+      try { video.play(); } catch {}
+      this._emit = () => this.emit();
+      for (const ev of ['timeupdate', 'play', 'pause', 'ratechange', 'seeking', 'seeked', 'durationchange', 'ended']) video.addEventListener(ev, this._emit);
+      this.emit(true);
+    },
+    detach() {
+      const v = this.video; if (!v) return;
+      this.stopScan();
+      this.emit(true);
+      v.pause();
+      for (const ev of ['timeupdate', 'play', 'pause', 'ratechange', 'seeking', 'seeked', 'durationchange', 'ended']) v.removeEventListener(ev, this._emit);
+      v.style.cssText = v.style.cssText.replace(/width:100%;height:100%;object-fit:contain;max-width:none;max-height:none;/, '');
+      v.controls = this.hadControls;
+      if (this.home.parent) this.home.parent.insertBefore(v, this.home.next);
+      this.overlay?.remove(); this.overlay = null;
+      document.documentElement.classList.remove('hub-playback');
+      this.video = null;
+      send({ type: 'hub:player', active: false });
+      markDirty();
+    },
+    toggle() { if (!this.video) return; if (this.scanRate !== 1) { this.stopScan(); return; } this.video.paused ? this.video.play() : this.video.pause(); this.emit(true); },
+    nudge(sign, repeat) {
+      if (!this.video) return;
+      const step = repeat ? 10 : 5;
+      this.pendingSeek = Math.max(0, Math.min(this.video.duration || Infinity, (this.pendingSeek ?? this.video.currentTime) + sign * step));
+      this.emit(true);
+      if (!this.seekTimer) this.seekTimer = setTimeout(() => this.commit(), 250);
+    },
+    commit() {
+      clearTimeout(this.seekTimer); this.seekTimer = null;
+      if (this.pendingSeek == null || !this.video) return;
+      const t = this.pendingSeek; this.pendingSeek = null;
+      if (typeof this.video.fastSeek === 'function') this.video.fastSeek(t); else this.video.currentTime = t;
+    },
+    scan(sign) {
+      if (!this.video) return;
+      if (sign < 0) { this.nudge(-1, true); return; }
+      const rates = [2, 4, 8]; const i = rates.indexOf(this.scanRate);
+      if (i === rates.length - 1) { this.stopScan(); this.scanTimer = setInterval(() => this.nudge(1, true), 300); this.scanRate = 16; }
+      else { this.scanRate = rates[i + 1]; this.video.playbackRate = this.scanRate; this.video.muted = this.scanRate > 2; this.video.play(); }
+      this.emit(true);
+    },
+    stopScan() { clearInterval(this.scanTimer); this.scanTimer = null; if (this.video) { this.video.playbackRate = 1; this.video.muted = false; } this.scanRate = 1; },
+    emit(force) {
+      const v = this.video; if (!v) return;
+      const now = performance.now();
+      if (!force && now - this.lastSent < 500) return;
+      this.lastSent = now;
+      send({ type: 'hub:player', active: true, t: this.pendingSeek ?? v.currentTime, d: v.duration || 0, paused: v.paused, rate: this.scanRate, ended: v.ended, show: !!force });
+    },
   };
 
-  // ---- 7. Boot ------------------------------------------------------------------
+  // ---- 8. Commands from the shell ----------------------------------------------
+  window.addEventListener('message', (e) => {
+    if (SHELL && e.origin !== SHELL) return;
+    const m = e.data || {};
+    switch (m.type) {
+      case 'hub:ping': send({ type: 'hub:pong', n: m.n }); break;
+      case 'hub:candidates': pushCandidates(); break;
+      case 'hub:activate': { const el = elOf(m.id); if (!el) break; if (el.tagName === 'VIDEO') player.attach(el, m); else activate(el); break; }
+      case 'hub:anchor': { const el = elOf(m.id); if (el) scrollIntoAnchor(el); break; }
+      case 'hub:scrollBy': (scrollRoot || window).scrollBy({ top: m.dy }); markDirty(); break;
+      case 'hub:elementAt': {
+        const el = document.elementFromPoint(m.x, m.y); if (!el) { send({ type: 'hub:nothing' }); break; }
+        if (m.then === 'hide') send({ type: 'hub:hidden', selector: hideUser(el) });
+        else if (el.tagName === 'VIDEO' || el.closest('video')) player.attach(el.closest('video') || el, m);
+        else activate(el);
+        break;
+      }
+      case 'hub:hide': { const el = elOf(m.id); if (el) send({ type: 'hub:hidden', selector: hideUser(el) }); break; }
+      case 'hub:play': { const v = (m.id && elOf(m.id)) || document.querySelector(RULES.player) || document.querySelector('video'); if (v) player.attach(v, m); else send({ type: 'hub:noplayer' }); break; }
+      case 'hub:player': if (typeof player[m.cmd] === 'function') player[m.cmd](...(m.args || [])); break;
+      case 'hub:decisions': send({ type: 'hub:decisions', total: decisions.length, hidden: decisions.filter((d) => d.kind === 'hide').length, recent: decisions.slice(-8) }); break;
+      case 'hub:back': history.back(); break;
+      case 'hub:navigate': if (typeof m.path === 'string' && m.path.startsWith('/p/')) location.href = m.path; break;
+    }
+  });
+
+  // ---- 9. Boot ------------------------------------------------------------------
   function boot() {
     setupScrollRoot();
     mo.observe(document.documentElement, { childList: true, subtree: true });
     schedule(document.body ? document.body.querySelectorAll('*') : []);
-    addEventListener('resize', () => { rectsDirty = true; }, { passive: true });
-    addEventListener('scroll', () => { rectsDirty = true; }, { passive: true, capture: true });
-    try { parent.postMessage({ type: 'hub:ready', source: RULES.sourceId, href: location.href }, '*'); } catch {}
+    addEventListener('resize', markDirty, { passive: true });
+    addEventListener('scroll', markDirty, { passive: true, capture: true });
+    send({ type: 'hub:ready', source: SOURCE, href: location.pathname + location.search, title: document.title });
+    pushCandidates();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();

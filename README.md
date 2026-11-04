@@ -42,9 +42,12 @@ On Windows PowerShell 5.1 use `;` rather than `&&` to chain commands.
 
 ### 1. Rendering
 
-* The portal is loaded in an **iframe served from the hub's own origin** via the proxy, rendered at
-  a fixed 1280 logical width (`<meta viewport width=1280>` injected) and scaled as a whole with
-  `transform: scale()` to the TV surface. The portal sees the desktop layout it was built for.
+* The portal is loaded in an **iframe served from a second origin** (the portal port, 8788 by
+  default) via the proxy, rendered at a fixed 1280 logical width (`<meta viewport width=1280>`
+  injected) and scaled as a whole with `transform: scale()` to the TV surface. The portal sees the
+  desktop layout it was built for. The shell and the frame talk only through `postMessage`
+  (candidates, activate, scroll, player commands and state), so portal scripts can never reach the
+  shell, its storage or the hub API.
 * The shell's logical surface is capped at 1920 even on 4K panels; the panel upscales.
 * **Z-index conflicts**: in playback mode the player is reparented into a shell-owned overlay with
   its own stacking context, and sticky headers are un-fixed by injected CSS
@@ -110,9 +113,16 @@ Rules are data, per source, in `config/sources.json`:
 
 The viewer frame cannot leave the hub. Layers, outermost first:
 
-* The shell page is served with `Content-Security-Policy: frame-src 'self'`, so the browser itself
-  refuses any navigation of the portal frame to another origin, whatever script asked for it. The
-  shell notices the refused load, discards the frame, and reloads the last good page.
+* **Origin isolation.** Portal pages live on the portal port; the shell on the hub port. Portal
+  JavaScript runs in a different origin from the shell and cannot read it, change rules, or read
+  the TV's saved positions. The hub API is not served on the portal port at all.
+* The shell page is served with `Content-Security-Policy: frame-src <portal origin>`, so the
+  browser itself refuses any navigation of the portal frame anywhere else, whatever script asked
+  for it. Proxied pages carry `frame-ancestors <shell origin>` so nothing but the shell can frame
+  them. The shell notices a refused load (or a frame that stops answering heartbeats), discards the
+  frame, and reloads the last page that did not escape.
+* **Streaming** works through the hub: HLS playlists (`.m3u8`) and DASH manifests (`.mpd`) are
+  rewritten so every segment, key and variant loads via the proxy.
 * Proxied pages get `default-src 'self'`: every resource must come through the hub, where the
   classifier runs. Static URLs are rewritten by the proxy; URLs set by scripts (`fetch`, XHR,
   `img.src`, `script.src`, `setAttribute`) are rewritten by the content script. `meta refresh`
@@ -134,7 +144,7 @@ The viewer frame cannot leave the hub. Layers, outermost first:
   list means any device. Hot-reloaded on save.
 
 **Threat model.** The hub is a home-LAN appliance with no login. Without the client allowlist,
-anyone on your network can browse through it and change rules. Do not expose port 8787 to the internet. Portal JavaScript still
+anyone on your network can browse through it and change rules. Do not expose ports 8787 or 8788 to the internet. Portal JavaScript still
 runs inside the TV browser (locked to the hub origin by CSP), so keep the TV's firmware updated as
 you would for any browsing, and only configure sources you trust.
 

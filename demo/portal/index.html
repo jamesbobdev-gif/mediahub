@@ -51,6 +51,8 @@
     }, { once: true, capture: true });
     // Late-mounted overlay.
     setTimeout(() => { const d = document.createElement('div'); d.className = 'interstitial'; d.textContent = 'INTERSTITIAL (late overlay)'; document.body.appendChild(d); }, 800);
+    // Forced redirect to another site (?redirect=1): the kind of thing a hub must refuse.
+    if (params.get('redirect')) setTimeout(() => { location.href = 'https://example.com/'; }, 500);
     // Tracking beacons.
     fetch('https://tracker.example/pixel.gif?e=view').catch(() => {});
     const s = document.createElement('script'); s.src = 'https://ads.example/ads/loader.js'; document.head.appendChild(s);

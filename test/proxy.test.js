@@ -25,6 +25,24 @@ test('cookies are scoped per source and never leak across sources', () => {
   assert.equal(unscopeCookieHeader('s_b__sid=zzz', s), '');
 });
 
+test('HLS playlists have every segment, key and variant URI routed through the hub', () => {
+  const m3u8 = ['#EXTM3U', '#EXT-X-KEY:METHOD=AES-128,URI="https://keys.cdn.test/k1"', '#EXT-X-MAP:URI="init.mp4"', '#EXTINF:4.0,', 'seg1.ts', '#EXTINF:4.0,', 'https://cdn.test/v/seg2.ts', ''].join('\n');
+  const out = proxy.rewriteM3u8(m3u8, sources.get('demo'), 'https://portal.test/app/stream/index.m3u8');
+  assert.match(out, /URI="\/x\/demo\/https%3A%2F%2Fkeys\.cdn\.test%2Fk1"/);
+  assert.match(out, /URI="\/p\/demo\/stream\/init\.mp4"/);
+  assert.match(out, /^\/p\/demo\/stream\/seg1\.ts$/m);
+  assert.match(out, /^\/x\/demo\/https%3A%2F%2Fcdn\.test%2Fv%2Fseg2\.ts$/m);
+  assert.doesNotMatch(out, /^https:/m);
+});
+
+test('DASH manifests have BaseURL and segment template attributes routed through the hub', () => {
+  const mpd = '<MPD><BaseURL>https://cdn.test/d/</BaseURL><SegmentTemplate media="chunk-$Number$.m4s" initialization="init.mp4"/></MPD>';
+  const out = proxy.rewriteMpd(mpd, sources.get('demo'), 'https://portal.test/app/stream/manifest.mpd');
+  assert.match(out, /<BaseURL>\/x\/demo\/https%3A%2F%2Fcdn\.test%2Fd%2F<\/BaseURL>/);
+  assert.match(out, /media="\/p\/demo\/stream\/chunk-\$Number\$\.m4s"/);
+  assert.match(out, /initialization="\/p\/demo\/stream\/init\.mp4"/);
+});
+
 test('meta refresh redirects are routed through the hub, never to an external site directly', () => {
   const out = proxy.rewriteHtml('<html><head><meta http-equiv="refresh" content="0;url=https://evil.test/land"><meta http-equiv="refresh" content="2; URL=/app/next"></head></html>', sources.get('demo'), 'https://portal.test/app/index.html');
   assert.doesNotMatch(out, /url=https:\/\/evil\.test/);

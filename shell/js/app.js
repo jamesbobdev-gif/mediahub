@@ -12,37 +12,36 @@ const views = { home: $('#view-home'), search: $('#view-search'), portal: $('#vi
 const ring = $('#focus-ring'), cursorEl = $('#cursor'), toast = $('#toast'), osd = $('#osd'), hud = $('#hud');
 
 const state = {
-  view: 'home',            // 'home' | 'portal'
+  view: 'home',            // 'home' | 'search' | 'portal'
   mode: 'spatial',         // 'spatial' | 'cursor'
-  focus: null,             // {el,x,y,w,h} in shell coordinates
-  sources: [],
-  portalDepth: 0, goingBack: false, portalSource: null,
-  query: '', searchReturn: 'home',
+  focus: null,             // home/search: {el,x,y,w,h}; portal: {id,x,y,w,h}
+  sources: [], env: null,
+  portalDepth: 0, goingBack: false, portalSource: null, goodUrls: [], blockedRedirects: 0,
   playKey: null, playTitle: null, playItemId: null,
-  metrics: { focus: [], seek: [] },
+  query: '', searchReturn: 'home',
+  decisions: null,
+  metrics: { focus: [] },
 };
 
 const catalog = new CatalogCache();
 const art = new ArtworkLru();
-const portal = new PortalFrame({ frame: $('#portal-frame'), wrap: $('#portal-wrap') });
+let portal, player;
 const cursor = new VirtualCursor({ el: cursorEl, bounds: () => ({ w: innerWidth, h: innerHeight }) });
-const player = new Player({ osd });
 
 // ---------- focus ring ----------
 function setFocus(c, { scroll = true } = {}) {
   state.focus = c;
   for (const e of document.querySelectorAll('.focused')) if (e !== c?.el) e.classList.remove('focused');
   if (!c) { ring.hidden = true; return; }
-  // Scroll first, then measure: the ring is fixed-position and must follow the post-scroll rect.
   if (state.view !== 'portal') { c.el.classList.add('focused'); if (scroll) c.el.scrollIntoView({ block: 'nearest', inline: 'center' }); }
-  else if (scroll) portal.hub?.scrollIntoAnchor(c.el);
+  else if (scroll) portal.send({ type: 'hub:anchor', id: c.id });
   drawRing(c);
 }
 function drawRing(c) {
-  if (c.el.classList?.contains('key')) { ring.hidden = true; return; }   // keys carry their own focus style
+  if (c.el?.classList?.contains('key')) { ring.hidden = true; return; }
   let { x, y, w, h } = c;
   if (state.view !== 'portal') { const r = c.el.getBoundingClientRect(); x = r.left; y = r.top; w = r.width; h = r.height; }
-  else { const fresh = refind(portal.candidates(), c.el); if (fresh) ({ x, y, w, h } = fresh); }
+  else { const fresh = refind(portal.candidates(), c); if (fresh) ({ x, y, w, h } = fresh); }
   ring.hidden = false;
   ring.style.transform = `translate(${x}px, ${y}px)`;
   ring.style.width = `${w}px`; ring.style.height = `${h}px`;
@@ -55,19 +54,18 @@ function currentCandidates() {
 }
 function refreshFocus() {
   const cands = currentCandidates();
-  const same = state.focus && refind(cands, state.focus.el);
+  const same = refind(cands, state.focus);
   if (same) setFocus(same, { scroll: false });
   else if (cands.length) setFocus(pickNext(null, cands, null), { scroll: false });
   else setFocus(null);
 }
 function move(dir) {
   const t0 = performance.now();
-  document.querySelectorAll('.focused').forEach((e) => e.classList.remove('focused'));
   const cands = currentCandidates();
-  const cur = state.focus && refind(cands, state.focus.el) || state.focus;
+  const cur = refind(cands, state.focus) || state.focus;
   const next = pickNext(cur, cands, dir);
   if (next) setFocus(next);
-  else if (state.view === 'portal' && (dir === 'down' || dir === 'up')) { portal.hub?.scrollBy(dir === 'down' ? 300 : -300); requestAnimationFrame(refreshFocus); }
+  else if (state.view === 'portal' && (dir === 'down' || dir === 'up')) portal.send({ type: 'hub:scrollBy', dy: dir === 'down' ? 300 : -300 });
   requestAnimationFrame(() => { state.metrics.focus.push(performance.now() - t0); if (state.metrics.focus.length > 200) state.metrics.focus.shift(); });
 }
 
@@ -105,6 +103,25 @@ function renderHome() {
   const searchTile = tile({ title: 'Search', sub: `${items.length} titles across ${state.sources.length} sources`, icon: '⌕' }); searchTile.dataset.search = '';
   for (const r of [row('Continue watching', cont), row('Sources', [searchTile, ...srcs]), row('Movies', byKind('movie')), row('Series', byKind('series')), row('Episodes', byKind('episode'))]) if (r) rows.appendChild(r);
   lazyArtwork($('#rows'));
+}
+const fmtMin = (s) => `${Math.max(1, Math.round(s / 60))} min`;
+let artObserver;
+function lazyArtwork(container) {
+  artObserver?.disconnect();
+  artObserver = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      const t = e.target; artObserver.unobserve(t);
+      const it = catalog.items.get(t.dataset.id); if (!it) continue;
+      const url = catalog.artworkUrl(it); if (!url) continue;
+      art.get(url).then((obj) => { const p = t.querySelector('.poster'); p.style.backgroundImage = `url(${obj})`; p.querySelector('.initial')?.remove(); }).catch(() => {});
+    }
+  }, { root: container.closest('section'), rootMargin: '400px 600px' });
+  for (const t of container.querySelectorAll('.tile[data-id]')) artObserver.observe(t);
+}
+function tickClock() {
+  const el = $('#clock'); if (!el) return;
+  el.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
 // ---------- search view ----------
@@ -154,25 +171,8 @@ function searchSelect() {
   if (el.dataset.key) return searchKey(el.dataset.key);
   if (el.dataset.id) { state.searchReturn = 'search'; return openItem(el.dataset.id); }
 }
-const fmtMin = (s) => `${Math.max(1, Math.round(s / 60))} min`;
-let artObserver;
-function lazyArtwork(container) {
-  artObserver?.disconnect();
-  artObserver = new IntersectionObserver((entries) => {
-    for (const e of entries) {
-      if (!e.isIntersecting) continue;
-      const t = e.target; artObserver.unobserve(t);
-      const it = catalog.items.get(t.dataset.id); if (!it) continue;
-      const url = catalog.artworkUrl(it); if (!url) continue;
-      art.get(url).then((obj) => { const p = t.querySelector('.poster'); p.style.backgroundImage = `url(${obj})`; p.querySelector('.initial')?.remove(); }).catch(() => {});
-    }
-  }, { root: container.closest('section'), rootMargin: '400px 600px' });
-  for (const t of container.querySelectorAll('.tile[data-id]')) artObserver.observe(t);
-}
-function tickClock() {
-  const el = $('#clock'); if (!el) return;
-  el.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-}
+
+// ---------- opening things ----------
 function portalPathFor(sourceId, absUrl) {
   const def = state.sources.find((s) => s.id === sourceId);
   const u = new URL(absUrl);
@@ -195,89 +195,82 @@ function openItem(id) {
 }
 
 // ---------- portal view ----------
-function openPortal(url, { key = null, title = null, itemId = null } = {}) {
+function openPortal(path, { key = null, title = null, itemId = null } = {}) {
   state.playKey = key; state.playTitle = title; state.playItemId = itemId;
-  state.portalDepth = 0; state.goingBack = false; state.lastGoodUrl = url; state.blockedRedirects = 0;
-  state.portalSource = (url.match(/^\/p\/([^/]+)/) || [])[1] || null;
+  state.portalDepth = 0; state.goingBack = false; state.goodUrls = [path]; state.blockedRedirects = 0;
+  state.portalSource = (path.match(/^\/p\/([^/]+)/) || [])[1] || null;
   showView('portal');
-  portal.load(url);
+  portal.load(path);
   say('Loading portal…');
 }
-portal.onReady = () => {
-  if (state.view !== 'portal' || portal.frame.src === 'about:blank') return;
-  say('');
-  if (!portal.hub) {
-    // The frame ended up somewhere that is not a hub page: a redirect the browser refused (CSP) or an
-    // escape we could not rewrite. Never leave the TV there; go back to the last good page.
-    state.blockedRedirects = (state.blockedRedirects || 0) + 1;
+function wirePortal() {
+  portal.onReady = (m) => {
+    if (state.view !== 'portal') return;
+    say('');
+    state.blockedRedirects = 0;
+    if (state.goodUrls[state.goodUrls.length - 1] !== m.href) state.goodUrls.push(m.href);
+    if (state.goodUrls.length > 20) state.goodUrls.shift();
+    if (state.goingBack) { state.goingBack = false; state.portalDepth = Math.max(1, state.portalDepth - 1); } else state.portalDepth++;
+    setTimeout(refreshFocus, 50);
+  };
+  portal.onCandidates = () => { if (state.view === 'portal' && !player.active) refreshFocus(); };
+  portal.onBlocked = () => {
+    if (state.view !== 'portal') return;
+    state.blockedRedirects++;
     say('Blocked a redirect to another site');
-    if (state.lastGoodUrl && state.blockedRedirects < 4) {
-      // The refused frame is stuck on an opaque error page; a fresh frame loads cleanly.
-      const url = state.lastGoodUrl; state.goingBack = true;
-      portal.recreate();
-      portal.load(url);
-    } else leavePortal();
-    return;
-  }
-  state.blockedRedirects = 0;
-  try { const l = portal.win.location; state.lastGoodUrl = l.pathname + l.search; } catch {}
-  setTimeout(refreshFocus, 50);
-  clearInterval(state.portalTick);
-  state.portalTick = setInterval(() => { if (state.view === 'portal' && !player.active) refreshFocus(); }, 500);
-};
+    // The page that escaped is not a good page to return to: drop it and go to the one before.
+    if (state.goodUrls[state.goodUrls.length - 1] === portal.href) state.goodUrls.pop();
+    const url = state.goodUrls[state.goodUrls.length - 1];
+    if (url && state.blockedRedirects < 4) { state.goingBack = true; portal.recreate(); portal.load(url); }
+    else leavePortal();
+  };
+  portal.onHidden = async (selector) => {
+    refreshFocus();
+    try {
+      const r = await fetch(`/api/sources/${encodeURIComponent(state.portalSource)}/rules`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ css: [selector] }) });
+      say(r.ok ? `Hidden and saved: ${selector}` : `Hidden (save failed: HTTP ${r.status})`);
+    } catch (e) { say(`Hidden (save failed: ${e.message})`); }
+  };
+  portal.onNoPlayer = () => say('No player on this page');
+  portal.onDecisions = (d) => { state.decisions = d; if (!hud.hidden) renderHud(); };
+  player.onEnd = () => stopPlayback();
+  player.onProgress = (t, d) => {
+    const key = playbackKey(); if (!key) return;
+    progress.save(key, { t, d, title: state.playTitle || portal.title, portalUrl: portal.href, itemId: state.playItemId });
+  };
+}
 function portalSelect() {
-  const hub = portal.hub; if (!hub) return;
-  if (state.mode === 'cursor') {
-    const p = portal.toFrame(cursor.x, cursor.y);
-    const el = hub.elementAt(p.x, p.y); if (el) hub.activate(el);
-    return;
-  }
-  const el = state.focus?.el; if (!el) return;
-  if (el.tagName === 'VIDEO') { startPlayback(el); return; }
-  hub.activate(el);
-  setTimeout(refreshFocus, 150);
+  if (state.mode === 'cursor') { const p = portal.toFrame(cursor.x, cursor.y); portal.send({ type: 'hub:elementAt', x: p.x, y: p.y, then: 'activate', resumeAt: resumeFor() }); return; }
+  const c = state.focus; if (!c || c.id == null) return;
+  if (c.tag === 'VIDEO') return startPlayback(c.id);
+  portal.send({ type: 'hub:activate', id: c.id });
 }
 function playbackKey() {
   if (state.playKey) return state.playKey;
-  const w = portal.win; try { return `${state.portalSource}:${w.location.pathname}${w.location.search}`; } catch { return null; }
+  return portal.href ? `${state.portalSource}:${portal.href}` : null;
 }
-function startPlayback(video) {
-  video = video || portal.hub?.findVideo();
-  if (!video) return say('No player on this page');
-  const key = playbackKey();
-  const saved = key && progress.get(key);
-  player.onEnd = () => stopPlayback();
-  player.onProgress = (t, d) => {
-    let title = state.playTitle; try { title = title || portal.frame.contentDocument.title; } catch {}
-    let portalUrl; try { const l = portal.win.location; portalUrl = l.pathname + l.search; } catch {}
-    progress.save(key, { t, d, title, portalUrl, itemId: state.playItemId });
-  };
-  player.attach(video, { resumeAt: saved ? saved.t : 0 });
+function resumeFor() { const key = playbackKey(); const saved = key && progress.get(key); return saved ? saved.t : 0; }
+function startPlayback(id = null) {
+  const resumeAt = resumeFor();
+  player.attach({ id, resumeAt });
   ring.hidden = true;
-  say(saved ? `Resuming at ${fmtTime(saved.t)}` : '');
+  if (resumeAt) say(`Resuming at ${fmtTime(resumeAt)}`);
 }
 const fmtTime = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-function stopPlayback() { player.detach(); refreshFocus(); }
+function stopPlayback() { player.detach(); setTimeout(refreshFocus, 100); }
 
-/** Rule inspector: hide the element under the cursor (or the focused one) and persist its selector. */
-async function inspectHide() {
-  const hub = portal.hub; if (!hub || !state.portalSource) return;
-  let el;
-  if (state.mode === 'cursor') { const p = portal.toFrame(cursor.x, cursor.y); el = hub.elementAt(p.x, p.y); }
-  else el = state.focus?.el;
-  if (!el) return say('Nothing under the cursor');
-  const selector = hub.hideUser(el);
-  hub.invalidate(); refreshFocus();
-  try {
-    const r = await fetch(`/api/sources/${encodeURIComponent(state.portalSource)}/rules`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ css: [selector] }) });
-    say(r.ok ? `Hidden and saved: ${selector}` : `Hidden (save failed: HTTP ${r.status})`);
-  } catch (e) { say(`Hidden (save failed: ${e.message})`); }
+/** Rule inspector: hide the element under the cursor (or the focused one); the frame answers with a selector. */
+function inspectHide() {
+  if (!state.portalSource) return;
+  if (state.mode === 'cursor') { const p = portal.toFrame(cursor.x, cursor.y); portal.send({ type: 'hub:elementAt', x: p.x, y: p.y, then: 'hide' }); return; }
+  const c = state.focus; if (!c || c.id == null) return say('Nothing focused');
+  portal.send({ type: 'hub:hide', id: c.id });
 }
 
 function showView(name) {
   state.view = name;
   for (const [k, v] of Object.entries(views)) v.hidden = k !== name;
-  if (name !== 'portal') { clearInterval(state.portalTick); portal.frame.src = 'about:blank'; cursor.hide(); state.mode = 'spatial'; }
+  if (name !== 'portal') { portal.stopHeartbeat(); portal.frame.src = 'about:blank'; portal.ready = false; portal.cands = []; cursor.hide(); state.mode = 'spatial'; player.state = { ...player.state, active: false }; osd.hidden = true; }
   if (name === 'home') renderHome();
   if (name === 'search') renderSearch();
   refreshFocus();
@@ -318,7 +311,7 @@ function dispatch(intent, { repeat, phase }) {
       if (repeat) return;
       if (state.view === 'search') { if (state.query) setQuery(state.query.slice(0, -1)); else showView('home'); return; }
       if (state.view !== 'portal') return;
-      if (state.portalDepth > 1) { state.goingBack = true; try { portal.win.history.back(); } catch { leavePortal(); } }
+      if (state.portalDepth > 1) { state.goingBack = true; portal.send({ type: 'hub:back' }); }
       else leavePortal();
       return;
     case 'mode': case 'cursor': if (state.view === 'portal') setMode(state.mode === 'cursor' ? 'spatial' : 'cursor'); return;
@@ -331,23 +324,29 @@ function dispatch(intent, { repeat, phase }) {
 function toggleHud() {
   hud.hidden = !hud.hidden;
   if (hud.hidden) return;
+  if (state.view === 'portal') portal.send({ type: 'hub:decisions' });
+  renderHud();
+}
+function renderHud() {
   const p = (arr) => arr.length ? [50, 95].map((q) => `p${q}=${arr.slice().sort((a, b) => a - b)[Math.floor((q / 100) * (arr.length - 1))].toFixed(1)}ms`).join(' ') : 'n/a';
-  const dec = portal.hub?.decisions || [];
-  hud.textContent = `platform=${PLATFORM} view=${state.view} mode=${state.mode} depth=${state.portalDepth}\nfocus latency ${p(state.metrics.focus)}\nportal decisions: ${dec.length} (${dec.filter((d) => d.kind === 'hide').length} hidden, ${dec.filter((d) => d.kind !== 'hide').length} popups/links blocked)\n` + dec.slice(-8).map((d) => `  ${d.kind} ${d.reason || ''} ${d.tag || ''} ${d.cls || d.url || ''}`).join('\n');
+  const d = state.decisions;
+  hud.textContent = `platform=${PLATFORM} view=${state.view} mode=${state.mode} depth=${state.portalDepth}\nportal origin: ${portal?.origin || '-'}\nfocus latency ${p(state.metrics.focus)}\n`
+    + (d ? `portal decisions: ${d.total} (${d.hidden} hidden, ${d.total - d.hidden} popups/links blocked)\n` + d.recent.map((x) => `  ${x.kind} ${x.reason || ''} ${x.tag || ''} ${x.cls || x.url || ''}`).join('\n') : '');
 }
 
 // ---------- boot ----------
 async function boot() {
   registerPlatformKeys();
   tickClock(); setInterval(tickClock, 15_000);
-  // Physical keyboard (desktop / USB keyboard on a TV): printable keys type into the search box.
-  // Registered before the intent router so letters mapped to intents (M, H, C, I) still type here.
   window.addEventListener('keydown', (e) => {
     if (state.view !== 'search' || e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
     e.preventDefault(); e.stopImmediatePropagation(); typeChar(e.key.toLowerCase());
   }, { capture: true });
   installKeyRouter(dispatch);
-  portal.attachReadyListener();
+  state.env = await fetch('/api/env').then((r) => r.json());
+  portal = new PortalFrame({ frame: $('#portal-frame'), wrap: $('#portal-wrap'), origin: state.env.portalOrigin });
+  player = new Player({ osd, portal });
+  wirePortal();
   state.sources = await fetch('/api/sources').then((r) => r.json());
   await catalog.init();
   showView('home');
@@ -358,13 +357,7 @@ async function boot() {
   const followScroll = () => { if (ringRaf) return; ringRaf = requestAnimationFrame(() => { ringRaf = 0; if (state.focus && state.view !== 'portal') drawRing(state.focus); }); };
   views.home.addEventListener('scroll', followScroll, { passive: true, capture: true });
   views.search.addEventListener('scroll', followScroll, { passive: true, capture: true });
-  window.addEventListener('message', (e) => {
-    if (e.data?.type !== 'hub:ready') return;
-    if (state.goingBack) { state.goingBack = false; state.portalDepth = Math.max(1, state.portalDepth - 1); } else state.portalDepth++;
-    setTimeout(refreshFocus, 50);
-  });
-  // Desktop convenience: mouse click on a tile focuses and selects it.
   for (const v of [views.home, views.search]) v.addEventListener('click', (e) => { const t = e.target.closest('[data-focusable]'); if (!t) return; const r = t.getBoundingClientRect(); setFocus({ el: t, x: r.left, y: r.top, w: r.width, h: r.height }); state.view === 'home' ? homeSelect() : searchSelect(); });
+  window.__app = { state, catalog, portal, player, dispatch, progress };
 }
 boot();
-window.__app = { state, catalog, portal, player, dispatch, progress };

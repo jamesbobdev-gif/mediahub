@@ -17,6 +17,9 @@ import { ArtworkStore } from './ingest/artwork.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT || 8787);
+// Portal pages are served from a second origin so their scripts can never touch the shell, its
+// storage, or the hub API. The shell and the frame talk only through postMessage.
+const PORTAL_PORT = Number(process.env.HUB_PORTAL_PORT || PORT + 1);
 const DATA = process.env.HUB_DATA || path.join(ROOT, 'data');
 const log = (...a) => { if (process.env.HUB_QUIET) return; console.log(new Date().toISOString().slice(11, 19), ...a); };
 
@@ -61,12 +64,24 @@ try {
   watch(CONFIG, (evt, file) => { if (!/\.json$/.test(file || '')) return; clearTimeout(reloadTimer); reloadTimer = setTimeout(() => reloadConfig(file), 300); });
 } catch (e) { log('config watch unavailable:', e.message); }
 
+const hostnameOf = (req) => { const h = req.headers.host || '127.0.0.1'; return h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.split(':')[0]; };
+
+/** Second origin: portal pages, third-party assets and the injected script only. */
+async function routePortal(req, res) {
+  const p = new URL(req.url, 'http://hub').pathname;
+  req.hubShellOrigin = `http://${hostnameOf(req)}:${PORT}`;
+  if (p.startsWith('/p/') || p.startsWith('/x/')) return proxy.handle(req, res);
+  if (p.startsWith('/shell/inject/')) { if (await serveStatic(path.join(ROOT, 'shell', 'inject'), p.slice('/shell/inject/'.length), req, res)) return; }
+  res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
+}
+
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'hub'}`);
   const p = url.pathname;
 
-  if (p.startsWith('/p/') || p.startsWith('/x/')) return proxy.handle(req, res);
+  if (p.startsWith('/p/') || p.startsWith('/x/')) { res.writeHead(404, { 'content-type': 'text/plain' }).end('portal content is served on the portal port'); return; }
 
+  if (p === '/api/env') return json(res, 200, { portalOrigin: `http://${hostnameOf(req)}:${PORTAL_PORT}`, version: '0.2.0' });
   if (p === '/api/sources') {
     return json(res, 200, [...sources.values()].map((s) => ({ id: s.id, name: s.name, home: `/p/${s.id}${s.home || '/'}`, rules: s.rules })));
   }
@@ -110,7 +125,7 @@ async function route(req, res) {
   if (p === '/' || p === '/index.html') {
     // The portal frame may only ever load hub-origin URLs. A page script that tries to send the
     // frame to another site is refused by the browser before any request leaves the TV.
-    res.setHeader('content-security-policy', "frame-src 'self'; form-action 'self'; object-src 'none'");
+    res.setHeader('content-security-policy', `frame-src http://${hostnameOf(req)}:${PORTAL_PORT}; form-action 'self'; object-src 'none'`);
     return serveStatic(path.join(ROOT, 'shell'), 'index.html', req, res);
   }
   if (p.startsWith('/shell/')) { if (await serveStatic(path.join(ROOT, 'shell'), p.slice(7), req, res)) return; }
@@ -118,19 +133,24 @@ async function route(req, res) {
   res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
 }
 
-const server = http.createServer((req, res) => {
-  const ip = req.socket.remoteAddress || '';
-  if (!clientAllowed(access, ip)) {
-    log('denied client', ip, req.url);
-    res.writeHead(403, { 'content-type': 'text/plain' }).end('This device is not allowed to use the hub. Add its address to config/access.json.');
-    return;
-  }
-  route(req, res).catch((e) => {
-    log('error', req.url, e.stack || e.message);
-    if (!res.headersSent) res.writeHead(500, { 'content-type': 'text/plain' });
-    res.end('internal error');
-  });
-});
+function guarded(handler) {
+  return (req, res) => {
+    const ip = req.socket.remoteAddress || '';
+    if (!clientAllowed(access, ip)) {
+      log('denied client', ip, req.url);
+      res.writeHead(403, { 'content-type': 'text/plain' }).end('This device is not allowed to use the hub. Add its address to config/access.json.');
+      return;
+    }
+    handler(req, res).catch((e) => {
+      log('error', req.url, e.stack || e.message);
+      if (!res.headersSent) res.writeHead(500, { 'content-type': 'text/plain' });
+      res.end('internal error');
+    });
+  };
+}
+const server = http.createServer(guarded(route));
+const portalServer = http.createServer(guarded(routePortal));
+portalServer.listen(PORTAL_PORT, () => log(`portal content on port ${PORTAL_PORT}`));
 
 server.listen(PORT, () => {
   log(`hub listening on http://127.0.0.1:${PORT}  (shell: /, status: /api/status)`);
@@ -139,4 +159,4 @@ server.listen(PORT, () => {
   setInterval(() => { if (!scheduler.running.size) artwork.sweep(); }, 24 * 3600 * 1000).unref();
 });
 
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { scheduler.stop(); catalog.close(); server.close(() => process.exit(0)); });
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { scheduler.stop(); catalog.close(); portalServer.close(); server.close(() => process.exit(0)); });

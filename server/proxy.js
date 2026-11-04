@@ -61,6 +61,27 @@ export function createProxy({ sources, filters, log = () => {} }) {
     return `/x/${source.id}/${encodeURIComponent(u.href)}`;
   }
 
+  /** HLS playlists: every non-comment line is a URI; KEY/MAP/MEDIA tags carry URI="...". */
+  function rewriteM3u8(text, source, playlistUrl) {
+    return text.split(/\r?\n/).map((line) => {
+      const t = line.trim();
+      if (!t) return line;
+      if (t.startsWith('#')) {
+        return line.replace(/URI="([^"]+)"/g, (m, u) => { try { return `URI="${hubUrlFor(new URL(u, playlistUrl).href, source)}"`; } catch { return m; } });
+      }
+      try { return hubUrlFor(new URL(t, playlistUrl).href, source); } catch { return line; }
+    }).join('\n');
+  }
+  /** DASH manifests: BaseURL elements and media/initialization/sourceURL attributes. */
+  function rewriteMpd(text, source, manifestUrl) {
+    const abs = (u) => { try { return hubUrlFor(new URL(u, manifestUrl).href, source); } catch { return u; } };
+    return text
+      .replace(/<BaseURL[^>]*>([^<]+)<\/BaseURL>/g, (m, u) => m.replace(u, abs(u.trim())))
+      .replace(/\b(media|initialization|sourceURL|xlink:href)="([^"]+)"/g, (m, k, u) => `${k}="${abs(u)}"`);
+  }
+  const isHls = (ctype, url) => /mpegurl/i.test(ctype) || /\.m3u8(\?|$)/i.test(url);
+  const isDash = (ctype, url) => /dash\+xml/i.test(ctype) || /\.mpd(\?|$)/i.test(url);
+
   function rewriteCssUrls(text, source, pageUrl) {
     return text.replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/gi, (m, q, val) => {
       if (/^(data|blob):/i.test(val) || val.startsWith('#')) return m;
@@ -68,7 +89,7 @@ export function createProxy({ sources, filters, log = () => {} }) {
     });
   }
 
-  function rewriteHtml(html, source, pageUrl) {
+  function rewriteHtml(html, source, pageUrl, shellOrigin = '') {
     const rules = source.rules;
     const attr = /(\s(?:src|href|action|poster|data-src|data-lazy-src))=(["'])([^"']*)\2/gi;
     html = html.replace(attr, (m, name, q, val) => {
@@ -96,7 +117,7 @@ export function createProxy({ sources, filters, log = () => {} }) {
     });
     const head = [
       '<meta name="viewport" content="width=1280">',
-      `<script>window.__HUB_RULES=${JSON.stringify({ sourceId: source.id, ...rules })};window.__HUB_ORIGIN=${JSON.stringify(source.originUrl.origin)};</script>`,
+      `<script>window.__HUB_RULES=${JSON.stringify({ sourceId: source.id, ...rules })};window.__HUB_ORIGIN=${JSON.stringify(source.originUrl.origin)};window.__HUB_SHELL=${JSON.stringify(shellOrigin)};</script>`,
       '<script src="/shell/inject/content.js"></script>',
       '<link rel="stylesheet" href="/shell/inject/content.css">',
       rules.css.length ? `<style id="hub-source-css">${rules.css.join(',\n')}{display:none !important}</style>` : '',
@@ -195,15 +216,21 @@ export function createProxy({ sources, filters, log = () => {} }) {
     const ctype = (up.headers.get('content-type') || '').toLowerCase();
     const isHtml = ctype.includes('text/html');
     const isCss = ctype.includes('text/css');
-    if (isHtml || isCss) {
+    const hls = !isHtml && isHls(ctype, upstream.href), dash = !isHtml && isDash(ctype, upstream.href);
+    if (isHtml || isCss || hls || dash) {
       const text = await up.text();
-      const rewritten = isHtml ? rewriteHtml(text, source, upstream.href) : rewriteCssUrls(text, source, upstream.href);
-      out['content-type'] = ctype;
+      const rewritten = isHtml ? rewriteHtml(text, source, upstream.href, req.hubShellOrigin)
+        : isCss ? rewriteCssUrls(text, source, upstream.href)
+        : hls ? rewriteM3u8(text, source, upstream.href)
+        : rewriteMpd(text, source, upstream.href);
+      out['content-type'] = hls ? 'application/vnd.apple.mpegurl' : dash ? 'application/dash+xml' : ctype;
       out['cache-control'] = 'no-store';
       if (isHtml) {
         // Everything the page loads must come from the hub origin (all URLs are rewritten to it, and
         // the content script rewrites script-made requests). Direct loads from any other host are refused.
-        out['content-security-policy'] = "default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; frame-src 'self'; form-action 'self'; base-uri 'none'; object-src 'none'";
+        // Only the shell may frame portal pages; portal pages are on their own origin and cannot touch the shell.
+        const ancestors = req.hubShellOrigin ? `frame-ancestors ${req.hubShellOrigin}; ` : '';
+        out['content-security-policy'] = `${ancestors}default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; frame-src 'self'; form-action 'self'; base-uri 'none'; object-src 'none'`;
       }
       res.writeHead(up.status, out);
       res.end(rewritten);
@@ -214,5 +241,5 @@ export function createProxy({ sources, filters, log = () => {} }) {
     Readable.fromWeb(up.body).on('error', () => res.destroy()).pipe(res);
   }
 
-  return { handle, stats, hubUrlFor, rewriteHtml };
+  return { handle, stats, hubUrlFor, rewriteHtml, rewriteM3u8, rewriteMpd };
 }

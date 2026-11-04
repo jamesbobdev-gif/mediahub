@@ -21,7 +21,7 @@ flowchart LR
     PC -- "SSH during setup" --> Pi
     Router -- "Internet" --> Sources
 
-    TV -- "opens http://pi:8787" --> Pi
+    TV -- "opens http://pi:8787<br/>(portal pages on :8788)" --> Pi
     Pi -- "fetches pages and feeds,<br/>strips ads, rewrites links" --> Sources
 ```
 
@@ -141,7 +141,15 @@ Use the TV's address (Settings → Network on the TV). Save with Ctrl+O, exit wi
 reloads the file on its own. Other devices now get a 403 page. The Pi itself is always allowed.
 Reserve the TV's address in the router too, or update the file if it changes.
 
-Never forward port 8787 on your router. The hub is for inside the house only.
+Never forward ports 8787 or 8788 on your router. The hub is for inside the house only.
+
+The hub uses two ports: 8787 for the interface and API, 8788 for portal pages (kept on a separate
+origin so portal scripts can never reach the interface). Both need to be reachable from the TV. On
+a Pi there is no firewall by default; on a Windows PC allow both:
+
+```bash
+netsh advfirewall firewall add rule name="Media Hub" dir=in action=allow protocol=TCP localport=8787-8788
+```
 
 ## Step 5. Replace the demo sources with real ones
 
