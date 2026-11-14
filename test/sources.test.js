@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { sourceIdFor, siteOf, hostPattern, parseAddress, addSource, removeSource, allowHost, patchSourceRules, loadSources, ownHostPatterns, brandOf } from '../server/sources.js';
+import { sourceIdFor, siteOf, hostPattern, parseAddress, addSource, removeSource, allowHost, patchSourceRules, loadSources, ownHostPatterns, brandOf , setSourceFields } from '../server/sources.js';
 
 function tempFile(list) {
   const file = path.join(mkdtempSync(path.join(tmpdir(), 'hub-sources-')), 'sources.json');
@@ -103,4 +103,17 @@ test("a site's own hosts are allowed without being listed: the site, and a sibli
   assert.equal(brandOf('tubitv.com'), 'tubi'); assert.equal(brandOf('pluto.tv'), 'pluto'); assert.equal(brandOf('app.roku.com'), 'roku'); assert.equal(brandOf('pbs.org'), null);
   const s = loadSources(tempFile([{ id: 'v', origin: 'https://vimeo.com', home: '/' }])).get('v');
   assert.ok(s.allowHostsRe.some((re) => re.test('f.vimeocdn.com')));
+});
+
+test('the start page and the browser a source is fetched as can be changed, on the same site only', () => {
+  const file = tempFile([{ id: 'yt', name: 'YouTube', origin: 'https://www.youtube.com', home: '/' }]);
+  let s = setSourceFields(file, 'yt', { home: 'tv', userAgent: 'tv' });
+  assert.equal(s.home, '/tv'); assert.equal(s.userAgent, 'tv');
+  s = setSourceFields(file, 'yt', { home: 'https://www.youtube.com/feed/trending?x=1' });
+  assert.equal(s.home, '/feed/trending?x=1');
+  assert.throws(() => setSourceFields(file, 'yt', { home: 'https://other.test/tv' }), /same site/);
+  s = setSourceFields(file, 'yt', { userAgent: 'desktop', name: ' YouTube TV ' });
+  assert.equal(s.userAgent, undefined); assert.equal(s.name, 'YouTube TV');
+  assert.deepEqual(read(file)[0], { id: 'yt', name: 'YouTube TV', origin: 'https://www.youtube.com', home: '/feed/trending?x=1' });
+  assert.throws(() => setSourceFields(file, 'nope', { home: '/' }), /unknown source/);
 });

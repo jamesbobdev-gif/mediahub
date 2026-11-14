@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createProxy, isPrivateHost, scopeSetCookie, unscopeCookieHeader, noteBlockedHost, blockedHostsFor, sourceFromHeaders } from '../server/proxy.js';
+import { createProxy, isPrivateHost, scopeSetCookie, unscopeCookieHeader, noteBlockedHost, blockedHostsFor, sourceFromHeaders , userAgentFor } from '../server/proxy.js';
 import { compileFilters } from '../server/filters.js';
 
 const sources = new Map([['demo', { id: 'demo', originUrl: new URL('https://portal.test/app/'), rules: { css: ['.hero'], removeOnMount: [], preserve: ['.grid'], scrollRoot: '.grid', player: 'video', touch: false } }]]);
@@ -150,4 +150,11 @@ test('a proxied script has its full script addresses routed too, and is kept per
     assert.equal(Buffer.concat(res.chunks).toString(), 'const m = "/p/demo/chunk.js"; import(m);');
     assert.equal(p.cache.stats.entries, 1);
   } finally { globalThis.fetch = real; }
+});
+
+test('a source is fetched as a desktop browser unless it asks for a TV one or names its own', () => {
+  assert.match(userAgentFor({}), /X11; Linux x86_64/);
+  assert.match(userAgentFor({ userAgent: 'desktop' }), /X11; Linux x86_64/);
+  assert.match(userAgentFor({ userAgent: 'tv' }), /SMART-TV/);
+  assert.equal(userAgentFor({ userAgent: 'Custom/1.0' }), 'Custom/1.0');
 });

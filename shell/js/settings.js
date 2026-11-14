@@ -65,11 +65,11 @@ export class SettingsView {
   }
 
   blockedFor(id) { return this.status?.blockedHosts?.[id] || []; }
-  typing() { return this.pane === 'add'; }
+  typing() { return this.pane === 'add' || this.pane === 'start'; }
 
   // ---------- rendering ----------
   render() {
-    const adding = this.pane === 'add';
+    const adding = this.pane === 'add' || this.pane === 'start';
     this.root.querySelector('.settings-layout').hidden = adding;
     this.addEl.hidden = !adding;
     if (adding) this.renderAdd(); else { this.renderList(); this.renderDetail(); }
@@ -115,8 +115,11 @@ export class SettingsView {
       d.appendChild(row);
     }
 
+    d.appendChild(el('detail-line', `Start page: ${s.startPage || '/'}` + (s.userAgent === 'tv' ? ' (opened as a TV)' : '')));
     const actions = el('btn-row');
     const open = focusable(el('btn', 'Open'), 'open'); open.dataset.open = s.home;
+    const start = focusable(el('btn', 'Start page'), 'startpage'); start.dataset.startpage = s.id;
+    actions.append(start);
     const titles = focusable(el('btn', s.feed ? 'Pull titles now' : 'Find its titles'), 'titles'); titles.dataset.titles = s.id; titles.dataset.feed = s.feed ? '1' : '';
     actions.append(titles);
     const remove = focusable(el('btn danger', this.confirmRemove === s.id ? 'Press OK again to remove' : 'Remove this source'), 'remove'); remove.dataset.remove = s.id;
@@ -126,9 +129,11 @@ export class SettingsView {
 
   renderAdd() {
     const a = this.addEl; a.innerHTML = '';
-    const h = document.createElement('h2'); h.textContent = 'Add a source'; a.appendChild(h);
-    a.appendChild(el('muted detail-hint', 'Only add apps and sites you are entitled to use. The hub opens them through its own cleaning proxy.'));
-    for (const [name, label, hint] of [['name', 'Name', 'What to call it on the home screen'], ['address', 'Address', 'The site, like pluto.tv or tubitv.com']]) {
+    const editing = this.pane === 'start';
+    const h = document.createElement('h2'); h.textContent = editing ? 'Start page' : 'Add a source'; a.appendChild(h);
+    a.appendChild(el('muted detail-hint', editing ? 'The page the hub opens first for this source, on the same site: a path like /tv or /feed/trending, or / for its front page.' : 'Only add apps and sites you are entitled to use. The hub opens them through its own cleaning proxy.'));
+    const fields = editing ? [['address', 'Start page', 'A path on the site, like /tv']] : [['name', 'Name', 'What to call it on the home screen'], ['address', 'Address', 'The site, like pluto.tv or tubitv.com']];
+    for (const [name, label, hint] of fields) {
       const f = focusable(el('field' + (this.field === name ? ' active' : '')), `field:${name}`); f.dataset.field = name;
       f.append(el('field-label', label), el('field-value'), el('field-hint', hint + '. Back deletes a letter.'));
       a.appendChild(f);
@@ -184,18 +189,19 @@ export class SettingsView {
     if (d.source != null) { this.selected = d.source; if (!this.focus(this.blockedFor(d.source).length ? `allow:${this.blockedFor(d.source)[0].host}` : 'open')) this.focus('remove'); return; }
     if (d.add != null) { this.pane = 'add'; this.draft = { name: '', address: '' }; this.field = 'name'; this.render(); this.focus('key:q'); return; }
     if (d.open) { this.openPortal(d.open); return; }
+    if (d.startpage) { this.pane = 'start'; this.editing = d.startpage; const s = this.sources.find((x) => x.id === d.startpage); this.draft = { name: s?.name || '', address: s?.startPage || '/' }; this.field = 'address'; this.render(); this.focus('key:q'); return; }
     if (d.allow) return this.allow(this.selected, d.allow);
     if (d.titles) return d.feed ? this.pull(d.titles) : this.discover(d.titles);
     if (d.remove) return this.remove(d.remove);
     if (d.field) { this.field = d.field; this.renderFields(); this.focus('key:q'); return; }
     if (d.key) return this.key(d.key);
-    if (d.save != null) return this.save();
+    if (d.save != null) return this.pane === 'start' ? this.saveStartPage() : this.save();
     if (d.cancel != null) { this.pane = 'list'; this.render(); this.focus('add'); }
   }
 
   /** Back: delete a character while typing, leave the add form, or cancel a pending remove. False means the screen itself should close. */
   back() {
-    if (this.pane === 'add') {
+    if (this.pane === 'add' || this.pane === 'start') {
       if (this.draft[this.field]) { this.draft[this.field] = this.draft[this.field].slice(0, -1); this.renderFields(); return true; }
       this.pane = 'list'; this.render(); this.focus('add'); return true;
     }
@@ -215,6 +221,17 @@ export class SettingsView {
     const f = this.field;
     this.draft[f] = (this.draft[f] + (f === 'address' ? ch.trim() : ch)).slice(0, LIMITS[f]);
     this.renderFields();
+  }
+
+  async saveStartPage() {
+    const id = this.editing, home = this.draft.address.trim() || '/';
+    let r, body;
+    try { r = await fetch(`/api/sources/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ home }) }); body = await r.json(); }
+    catch (e) { return this.say(`Could not save: ${e.message}`); }
+    if (!r.ok) return this.say(body.error || `Could not save (HTTP ${r.status})`);
+    this.say(`${body.name} now starts at ${body.startPage}`);
+    this.pane = 'list'; this.selected = id;
+    await this.refresh(); this.onSourcesChanged(); this.render(); this.focus(`source:${id}`);
   }
 
   async save() {

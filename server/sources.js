@@ -166,3 +166,29 @@ export function setSourceFeed(path, sourceId, feed, { intervalSec } = {}) {
   writeList(path, list);
   return s;
 }
+
+/** Change what the TV can edit about a source: its name, its start page (a path or a full
+ *  address on the same site) and the browser it is fetched as ("tv" for a TV user agent, "desktop",
+ *  or a full user agent string). Returns the entry. */
+export function setSourceFields(path, sourceId, { name, home, userAgent } = {}) {
+  const list = readList(path);
+  const s = list.find((x) => x.id === sourceId);
+  if (!s) throw new Error(`unknown source ${sourceId}`);
+  if (typeof name === 'string' && name.trim()) s.name = name.trim();
+  if (typeof home === 'string') {
+    let h = home.trim() || '/';
+    if (/^https?:\/\//i.test(h)) {
+      const u = new URL(h);
+      if (u.origin !== new URL(s.origin).origin) throw new Error('The start page must be on the same site.');
+      h = `${u.pathname || '/'}${u.search}`;
+    }
+    if (!h.startsWith('/')) h = `/${h}`;
+    s.home = h;
+  }
+  if (userAgent !== undefined) {
+    if (userAgent === null || userAgent === '' || userAgent === 'desktop') delete s.userAgent;
+    else if (typeof userAgent === 'string') s.userAgent = userAgent;
+  }
+  writeList(path, list);
+  return s;
+}

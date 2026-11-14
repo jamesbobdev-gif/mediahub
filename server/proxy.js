@@ -18,6 +18,15 @@ const STRIP_RESPONSE = new Set([
   'alt-svc',   // would point the TV at the real host over QUIC
 ]);
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36 MediaHub/0.1';
+// Sites with a lean-back layout serve it to a TV browser; "tv" in a source's userAgent asks for that.
+const TV_UA = 'Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/2.2 TV Safari/537.36 MediaHub/0.1';
+/** The user agent a source is fetched as. */
+export function userAgentFor(source) {
+  const ua = source?.userAgent;
+  if (!ua || ua === 'desktop') return UA;
+  if (ua === 'tv') return TV_UA;
+  return ua;
+}
 
 /** Loopback, link-local and RFC1918 ranges, plus bare hostnames: a page must never be able to make
  *  the hub fetch from the home network. A source whose own origin is private (the local demo) is exempt. */
@@ -292,7 +301,7 @@ export function createProxy({ sources, filters, log = () => {}, cacheMb = DEFAUL
       if (DROP_REQUEST.has(k) || k.startsWith('sec-') || k.startsWith('x-hub-') || k.startsWith(':')) continue;
       headers[k] = v;
     }
-    headers['user-agent'] = UA;
+    headers['user-agent'] = userAgentFor(source);
     headers['accept'] = req.headers['accept'] || '*/*';
     headers['accept-language'] = req.headers['accept-language'] || 'en';
     headers['referer'] = `${source.originUrl.origin}${source.originUrl.pathname}`;

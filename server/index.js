@@ -5,7 +5,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, watch } from 'node:fs';
-import { loadSources, reloadSources, patchSourceRules, addSource, removeSource, allowHost, setSourceFeed } from './sources.js';
+import { loadSources, reloadSources, patchSourceRules, addSource, removeSource, allowHost, setSourceFeed, setSourceFields } from './sources.js';
 import { discoverFeed } from './ingest/discover.js';
 import { loadFilters, compileFilters } from './filters.js';
 import { loadAccess, clientAllowed } from './access.js';
@@ -87,7 +87,7 @@ async function route(req, res) {
   if (p.startsWith('/p/') || p.startsWith('/x/')) { res.writeHead(404, { 'content-type': 'text/plain' }).end('portal content is served on the portal port'); return; }
 
   if (p === '/api/env') return json(res, 200, { portalOrigin: `http://${hostnameOf(req)}:${PORTAL_PORT}`, version: '0.2.0' });
-  const publicSource = (s) => ({ id: s.id, name: s.name, origin: s.origin, home: `/p/${s.id}${s.home || '/'}`, rules: s.rules, allowHosts: s.allowHosts || [], feed: s.feed ? { type: s.feed.type || (s.feed.itemRegex ? 'html' : 'json'), url: s.feed.url } : null });
+  const publicSource = (s) => ({ id: s.id, name: s.name, origin: s.origin, home: `/p/${s.id}${s.home || '/'}`, startPage: s.home || '/', userAgent: s.userAgent || 'desktop', rules: s.rules, allowHosts: s.allowHosts || [], feed: s.feed ? { type: s.feed.type || (s.feed.itemRegex ? 'html' : 'json'), url: s.feed.url } : null });
   if (p === '/api/sources' && req.method === 'GET') return json(res, 200, [...sources.values()].map(publicSource));
   // The Settings screen: add a source by name and address, remove one, allow a host it needs.
   // Each writes config/sources.json the way the rule inspector does; the hub reloads it in place.
@@ -100,6 +100,14 @@ async function route(req, res) {
     return json(res, 201, publicSource(sources.get(entry.id) || entry));
   }
   const sourceMatch = p.match(/^\/api\/sources\/([^/]+)$/);
+  if (sourceMatch && req.method === 'PATCH') {
+    const id = decodeURIComponent(sourceMatch[1]);
+    if (!sources.has(id)) return json(res, 404, { error: 'unknown source' });
+    const body = await readJsonBody(req);
+    try { setSourceFields(SOURCES_FILE, id, body); } catch (e) { return json(res, 400, { error: e.message }); }
+    reloadConfig('source-edited');
+    return json(res, 200, publicSource(sources.get(id)));
+  }
   if (sourceMatch && req.method === 'DELETE') {
     const id = decodeURIComponent(sourceMatch[1]);
     if (!sources.has(id)) return json(res, 404, { error: 'unknown source' });

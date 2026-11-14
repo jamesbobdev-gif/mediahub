@@ -2,6 +2,8 @@
 // logical width and scaled as a whole to the TV surface. The shell never touches the frame's DOM;
 // it exchanges messages with the injected content script and keeps a cached candidate list.
 
+import { FrameWatch } from './liveness.js';
+
 export const PORTAL_WIDTH = 1280;
 
 export class PortalFrame {
@@ -9,6 +11,7 @@ export class PortalFrame {
     this.frame = frame; this.wrap = wrap; this.origin = origin; this.scale = 1;
     this.ready = false; this.href = null; this.title = ''; this.cands = []; this.source = null;
     this.readyAt = 0; this.loadAt = 0;
+    this.watch = new FrameWatch();           // the timing rules: when a frame counts as gone
     this.onReady = () => {}; this.onBlocked = () => {}; this.onCandidates = () => {}; this.onPlayer = () => {};
     this.onHidden = () => {}; this.onNoPlayer = () => {}; this.onDecisions = () => {}; this.onTrace = () => {};
     window.addEventListener('message', (e) => this._onMessage(e));
@@ -17,26 +20,27 @@ export class PortalFrame {
 
   /** Load a hub path (/p/<source>/...) on the portal origin. */
   load(path) {
-    this.ready = false; this.cands = []; this.loadAt = performance.now(); this.missed = 0; this.readyPending = false;
-    clearTimeout(this._blockTimer); this._blockTimer = null;
+    this.ready = false; this.cands = []; this.loadAt = performance.now();
+    this.watch.load(this.loadAt);
     this.frame.src = this.origin + path;
     this.layout();
     this.startHeartbeat();
   }
 
-  /** Heartbeat: a hub page answers pings. Four misses in a row means the frame is no longer a hub
-   *  page (escaped, crashed, or refused), whatever events the browser did or did not fire. */
+  /** Heartbeat: a hub page answers pings. The frame counts as gone (escaped, crashed, refused)
+   *  by the rules in liveness.js: a loaded page that never announces itself, or an announced page
+   *  that falls silent, with seconds of patience for a heavy page or one that reloads itself. */
   startHeartbeat() {
     clearInterval(this._hb);
     this._hb = setInterval(() => {
       if (!this.frame.src || this.frame.src === 'about:blank') return;
-      if (performance.now() - this.loadAt < 5000) return;          // still loading: a heavy page gets a few seconds
-      // A heavy page can hold its main thread for a few seconds on a TV; only a longer silence means it is gone.
-      if (this.missed >= 4) { this.missed = 0; this.ready = false; this.onBlocked(); return; }
-      this.missed++;
+      const now = performance.now();
+      if (this.watch.state(now) === 'dead') { this.watch.load(now); this.ready = false; this.onBlocked(); return; }
       this.send({ type: 'hub:ping', n: Date.now() });
     }, 1000);
   }
+  /** Seconds since the page last said anything (for the stats). */
+  get missed() { return Math.round(this.watch.silence(performance.now())); }
   stopHeartbeat() { clearInterval(this._hb); this._hb = null; }
 
   layout() {
@@ -60,13 +64,13 @@ export class PortalFrame {
   _onMessage(e) {
     if (e.origin !== this.origin || e.source !== this.frame.contentWindow) return;
     const m = e.data || {};
+    this.watch.message(performance.now());
     switch (m.type) {
       case 'hub:ready':
-        // A late announcement answers a pending load; an early one is kept for the load that follows.
-        if (this._blockTimer) { clearTimeout(this._blockTimer); this._blockTimer = null; this.readyPending = false; } else this.readyPending = true;
-        this.ready = true; this.readyAt = performance.now(); this.href = m.href; this.title = m.title || ''; this.source = m.source; this.missed = 0;
+        this.watch.ready(performance.now());
+        this.ready = true; this.readyAt = performance.now(); this.href = m.href; this.title = m.title || ''; this.source = m.source;
         this.onReady(m); break;
-      case 'hub:pong': this.missed = 0; break;
+      case 'hub:pong': break;
       case 'hub:candidates': this.cands = m.list || []; if (m.href) this.href = m.href; this.onCandidates(); break;
       case 'hub:player': this.onPlayer(m); break;
       case 'hub:hidden': this.onHidden(m.selector); break;
@@ -77,16 +81,13 @@ export class PortalFrame {
   }
 
   attachLoadListener() {
+    // Every hub page announces itself once (hub:ready). The load event and the announcement are
+    // separate tasks and can arrive in either order; liveness.js pairs them and decides when a
+    // load with no announcement means the frame is not on a hub page (refused by CSP, or stuck).
     this._onLoad = () => {
-      // Every hub page announces itself once (hub:ready). Each load event consumes one announcement.
-      // The two are separate tasks and can arrive in either order, so a load with no announcement
-      // waits for a late one before concluding the frame is not on a hub page (refused by CSP). A
-      // heavy page on a TV can take seconds to run its first script, and some reload themselves once.
       if (this.frame.src === 'about:blank' || !this.frame.src) return;
       this.loadAt = performance.now();
-      if (this.readyPending) { this.readyPending = false; return; }
-      clearTimeout(this._blockTimer);
-      this._blockTimer = setTimeout(() => { this._blockTimer = null; this.ready = false; this.onBlocked(); }, 4000);
+      this.watch.loaded(this.loadAt);
     };
     this.frame.addEventListener('load', this._onLoad);
   }
@@ -98,8 +99,8 @@ export class PortalFrame {
     for (const a of old.attributes) if (a.name !== 'src') fresh.setAttribute(a.name, a.value);
     fresh.style.cssText = old.style.cssText;
     old.replaceWith(fresh);
-    clearTimeout(this._blockTimer); this._blockTimer = null; this.stopHeartbeat();
-    this.frame = fresh; this.ready = false; this.cands = []; this.readyAt = 0; this.loadAt = 0; this.missed = 0; this.readyPending = false;
+    this.stopHeartbeat();
+    this.frame = fresh; this.ready = false; this.cands = []; this.readyAt = 0; this.loadAt = 0; this.watch.load(performance.now());
     this.attachLoadListener();
     return fresh;
   }
