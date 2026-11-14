@@ -1,0 +1,9 @@
+// The Fire TV / Android TV wrapper app. See android/README.md.
+pluginManagement {
+    repositories { google(); mavenCentral(); gradlePluginPortal() }
+}
+dependencyResolutionManagement {
+    repositories { google(); mavenCentral() }
+}
+rootProject.name = 'mediahub-tv'
+include ':app'

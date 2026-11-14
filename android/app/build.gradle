@@ -1,0 +1,28 @@
+// One screen, no libraries. The hub's address is baked in at build time:
+//   gradlew assembleRelease -PhubUrl=http://192.168.1.50:8787/
+plugins { id 'com.android.application' }
+
+def hubUrl = project.findProperty('hubUrl') ?: 'http://192.168.1.2:8787/'
+
+android {
+    namespace 'com.example.mediahub'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'com.example.mediahub'
+        minSdk 22          // Fire OS 5 sticks and up
+        targetSdk 36
+        versionCode 1
+        versionName '0.1.0'
+        resValue 'string', 'hub_url', hubUrl
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug   // a sideloaded home app; no store key needed
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

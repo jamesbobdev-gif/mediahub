@@ -225,7 +225,10 @@ The browser bookmark is enough. If you want an icon in the TV's app list:
   `shell/appinfo.json` is provided.
 - **Samsung Tizen**: Tizen Studio on the PC, developer mode on the TV, same idea.
   `shell/config.xml` is provided.
-- **Android TV / Google TV**: a minimal WebView wrapper app pointed at the hub address, sideloaded.
+- **Fire TV, Android TV, Google TV**: the app in [`android/`](../android/README.md). Build it
+  on the PC with the Pi's address, turn on ADB Debugging in the TV's Developer Options, and
+  install it with `adb`. The README there has the exact steps. The Fire TV remote's menu
+  button is the hub's menu key, and holding Back leaves the app.
 
 On every platform the app is a thin shell that loads the hub; all logic stays on the Pi, so the
 app never needs updating when the hub changes.

@@ -1,2 +1,9 @@
 node_modules/
 data/
+
+# Android TV / Fire TV wrapper build output
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
