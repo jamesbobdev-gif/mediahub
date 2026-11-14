@@ -158,8 +158,12 @@
     let hinted = null;
     for (const el of queryAll(FOCUSABLE + ',[class*="play" i],[data-testid*="play" i],[id*="play" i]')) {
       if (el.tagName === 'VIDEO' || el.closest('.hub-hidden,.hub-placeholder')) continue;
+      // Anywhere on the page, not only in view: on a TV the hero fills the frame and the play
+      // button sits below it. It is scrolled to before it is pressed.
       const r = el.getBoundingClientRect();
-      if (!visible(el, r) || r.width > innerWidth * 0.9) continue;
+      if (!r.width || !r.height || r.width > innerWidth * 0.9) continue;
+      const cs = getComputedStyle(el);
+      if (cs.visibility === 'hidden' || cs.display === 'none') continue;
       const link = el.closest('a[href]');
       if (link && link !== el) {
         const to = link.getAttribute('href') || '';
@@ -181,7 +185,12 @@
     const largest = () => queryAll(RULES.player).concat(queryAll('video')).filter((v) => { const r = v.getBoundingClientRect(); return r.width > 0 && r.height > 0; }).sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect(); return rb.width * rb.height - ra.width * ra.height; })[0];
     const step = () => {
       const btn = pressed ? null : findPlayControl();
-      if (btn) { pressed = Date.now(); decisions.push({ kind: 'autoplay', tag: btn.tagName, cls: labelOf(btn) }); tell('pressed', { tag: btn.tagName, label: labelOf(btn), href: btn.getAttribute('href') || '' }); activate(btn); return false; }
+      if (btn) {
+        pressed = Date.now(); decisions.push({ kind: 'autoplay', tag: btn.tagName, cls: labelOf(btn) });
+        tell('pressed', { tag: btn.tagName, label: labelOf(btn), href: btn.getAttribute('href') || '', top: Math.round(btn.getBoundingClientRect().top) });
+        try { btn.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch {}
+        activate(btn); return false;
+      }
       const v = largest();
       if (ready(v) && (pressed || !findPlayControl())) { tell('attach', { readyState: v.readyState, src: String(v.currentSrc || v.getAttribute('src') || '').slice(0, 80) }); player.attach(v, m); return true; }
       return false;
@@ -191,7 +200,8 @@
       if (Date.now() > deadline) {
         clearInterval(timer);
         const v = largest();
-        tell('autoplay-gave-up', { pressed: !!pressed, videos: queryAll('video').length, path: location.pathname, title: document.title.slice(0, 60), video: v ? { readyState: v.readyState, src: String(v.currentSrc || v.getAttribute('src') || '').slice(0, 80), w: Math.round(v.getBoundingClientRect().width) } : null });
+        const seen = queryAll('button,a[href],[role="button"]').map((e) => labelOf(e)).filter((l) => /play|watch|resume/i.test(l)).slice(0, 6);
+        tell('autoplay-gave-up', { pressed: !!pressed, videos: queryAll('video').length, path: location.pathname, title: document.title.slice(0, 60), playish: seen, video: v ? { readyState: v.readyState, src: String(v.currentSrc || v.getAttribute('src') || '').slice(0, 80), w: Math.round(v.getBoundingClientRect().width) } : null });
         send({ type: 'hub:noplayer' });
       }
     }, 700);
