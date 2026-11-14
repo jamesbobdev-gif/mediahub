@@ -2,9 +2,9 @@ import { installKeyRouter, registerPlatformKeys, PLATFORM } from './keymap.js';
 import { pickNext, refind } from './spatial.js';
 import { VirtualCursor } from './cursor.js';
 import { Player } from './player.js';
-import { CatalogCache, ArtworkLru, featuredRows } from './catalog.js';
+import { CatalogCache, ArtworkLru, featuredRows, mixBySource } from './catalog.js';
 import { PortalFrame } from './portal.js';
-import { progress } from './progress.js';
+import { progress, history } from './progress.js';
 import { search, KEY_ROWS } from './search.js';
 import { SettingsView } from './settings.js';
 
@@ -117,13 +117,19 @@ function renderHome() {
   const front = featuredRows(items, state.sources);
   const onFront = new Set(front.flatMap((f) => f.items.map((it) => it.id)));
   const frontRows = front.map((f) => row(`${f.source.name} front page`, f.items.map((it) => tile({ id: it.id, title: it.title, sub: sub(it) }))));
-  const byKind = (k) => items.filter((i) => i.kind === k && !onFront.has(i.id)).map((it) => tile({ id: it.id, title: it.title, sub: sub(it) }));
+  // Movies and Series take titles in turns across sources, so one big feed does not fill the row.
+  const byKind = (k) => mixBySource(items.filter((i) => i.kind === k && !onFront.has(i.id))).map((it) => tile({ id: it.id, title: it.title, sub: sub(it) }));
   const cont = progress.list().map((p) => tile({ key: p.key, id: p.itemId, portal: p.portalUrl, title: p.title, sub: `${fmtMin(p.d - p.t)} left`, pct: p.t / p.d }));
+  // What was opened lately, across every source, after what is still in progress.
+  const inProgress = new Set(progress.list().map((p) => p.key));
+  const known = new Set(state.sources.map((s) => s.id));
+  const recent = history.list().filter((h) => !inProgress.has(h.key) && (!h.sourceId || known.has(h.sourceId)))
+    .map((h) => tile(h.kind === 'source' ? { key: h.key, portal: h.portalUrl, title: h.title, sub: 'opened lately', icon: '⌂' } : { key: h.key, id: h.itemId, portal: h.portalUrl, title: h.title, sub: h.sourceId || '', recent: true }));
   const countFor = (id) => items.filter((i) => i.sources.some((s) => s.sourceId === id)).length;
-  const srcs = state.sources.map((s) => tile({ portal: s.home, title: s.name, sub: `${countFor(s.id)} titles · open portal`, icon: '⌂', online: true }));
+  const srcs = state.sources.map((s) => { const t = tile({ portal: s.home, title: s.name, sub: `${countFor(s.id)} titles · open portal`, icon: '⌂', online: true }); t.dataset.source = s.id; return t; });
   const searchTile = tile({ title: 'Search', sub: `${items.length} titles across ${state.sources.length} sources`, icon: '⌕' }); searchTile.dataset.search = '';
   const settingsTile = tile({ title: 'Settings', sub: 'Add or remove sources, allow what they need', icon: '⚙' }); settingsTile.dataset.settings = '';
-  for (const r of [row('Continue watching', cont), row('Sources', [searchTile, ...srcs, settingsTile]), ...frontRows, row('Movies', byKind('movie')), row('Series', byKind('series')), row('Episodes', byKind('episode'))]) if (r) rows.appendChild(r);
+  for (const r of [row('Continue watching', cont), row('Recently watched', recent), row('Sources', [searchTile, ...srcs, settingsTile]), ...frontRows, row('Movies', byKind('movie')), row('Series', byKind('series')), row('Episodes', byKind('episode'))]) if (r) rows.appendChild(r);
   lazyArtwork($('#rows'));
 }
 const fmtMin = (s) => `${Math.max(1, Math.round(s / 60))} min`;
@@ -206,15 +212,25 @@ function homeSelect() {
   const el = state.focus?.el; if (!el) return;
   if ('search' in el.dataset) return openSearch();
   if ('settings' in el.dataset) return openSettings();
-  if (el.dataset.key) { const p = progress.get(el.dataset.key); if (p) return openPortal(p.portalUrl, { key: el.dataset.key, title: p.title, itemId: p.itemId, autoplay: true }); }
-  if (el.dataset.portal) return openPortal(el.dataset.portal);
+  if (el.dataset.key) {
+    const p = progress.get(el.dataset.key);
+    if (p) return openPortal(p.portalUrl, { key: el.dataset.key, title: p.title, itemId: p.itemId, autoplay: true });
+    const h = history.list().find((x) => x.key === el.dataset.key);
+    if (h) return h.kind === 'source' ? openPortal(h.portalUrl) : openPortal(h.portalUrl, { key: h.key, title: h.title, itemId: h.itemId, autoplay: true });
+  }
+  if (el.dataset.portal) {
+    if (el.dataset.source) history.add({ key: `source:${el.dataset.source}`, title: el.querySelector('.title')?.textContent || el.dataset.source, portalUrl: el.dataset.portal, sourceId: el.dataset.source, kind: 'source' });
+    return openPortal(el.dataset.portal);
+  }
   openItem(el.dataset.id);
 }
 function openItem(id) {
   const it = catalog.items.get(id);
   const src = it?.sources.find((s) => s.itemUrl);
   if (!src) return say('No source URL for this title');
-  openPortal(portalPathFor(src.sourceId, src.itemUrl), { key: it.id, title: it.title, itemId: it.id, autoplay: true });
+  const path = portalPathFor(src.sourceId, src.itemUrl);
+  history.add({ key: it.id, title: it.title, portalUrl: path, itemId: it.id, sourceId: src.sourceId });
+  openPortal(path, { key: it.id, title: it.title, itemId: it.id, autoplay: true });
 }
 
 // ---------- settings view ----------

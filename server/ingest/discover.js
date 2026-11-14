@@ -331,6 +331,38 @@ export function sitemapCandidates(robotsTxt, origin) {
 /** Child sitemaps worth opening first: the ones named after what they list. */
 export const rankSitemaps = (urls) => [...urls].sort((a, b) => (VIDEO_WORDS.test(b) ? 1 : 0) - (VIDEO_WORDS.test(a) ? 1 : 0));
 
+/** WordPress sites publish a REST API: the content types a site has, and lists of each with the
+ *  featured picture embedded. The type that sounds like video is used, else posts. */
+const WP_VIDEO_TYPE = /^(video|videos|episode|episodes|movie|movies|film|films|show|shows|series)$/i;
+export function wpVideoType(types) {
+  const names = Object.keys(types || {});
+  return names.find((n) => WP_VIDEO_TYPE.test(n)) || (names.includes('post') ? 'post' : null);
+}
+export function parseWpList(list, baseUrl) {
+  const out = [];
+  for (const p of Array.isArray(list) ? list : []) {
+    const title = decode(p?.title?.rendered || p?.title || '');
+    const url = abs(p?.link, baseUrl);
+    if (!title || !url) continue;
+    const media = p?._embedded?.['wp:featuredmedia']?.[0];
+    const sizes = media?.media_details?.sizes || {};
+    const image = abs(sizes.large?.source_url || sizes.medium_large?.source_url || media?.source_url || p?.featured_image, baseUrl);
+    const year = String(p?.date || '').match(/^(19|20)\d{2}/)?.[0];
+    out.push({ title, url, image, kind: /series|show/i.test(p?.type || '') ? 'series' : kindFromUrl(url), year });
+  }
+  return out;
+}
+
+/** Internet Archive collections: the archive lists any collection as an RSS search, newest and
+ *  most downloaded films first, which the hub already reads. */
+export function archiveCollectionFeed(origin, home) {
+  if (!/(^|\.)archive\.org$/i.test(new URL(origin).hostname)) return null;
+  const m = String(home || '').match(/^\/details\/([^/?#]+)/);
+  if (!m) return null;
+  const q = `collection:${m[1]} AND mediatype:movies`;
+  return `https://archive.org/advancedsearch.php?q=${encodeURIComponent(q)}&fl[]=identifier&sort[]=downloads+desc&rows=200&output=rss`;
+}
+
 // ---------- the search ----------
 
 /**
@@ -343,6 +375,16 @@ export async function discoverFeed(origin, home = '/', { timeoutMs = 25000, log 
   const get = async (url, accept, maxBytes) => ft(url, { signal: AbortSignal.timeout(Math.min(10000, left())), accept, maxBytes, log });
   const base = new URL(origin).origin;
   const homeUrl = abs(home || '/', base) || base;
+
+  // 0. Sites whose shape the hub knows: an Internet Archive collection has a search feed.
+  const archiveRss = archiveCollectionFeed(base, home);
+  if (archiveRss) {
+    try {
+      const r = await get(archiveRss, 'application/rss+xml,application/xml;q=0.9,*/*;q=0.5');
+      const items = parseRss(r.text, r.url);
+      if (items.length >= ENOUGH) return { feed: { type: 'rss', url: archiveRss }, items, how: 'the archive\'s list of the collection', intervalSec: 86400 };
+    } catch {}
+  }
 
   // 1. The page itself: the cards on its front page, then structured data, then the data it
   //    embeds for its tiles, then feeds it links to.
@@ -367,6 +409,20 @@ export async function discoverFeed(origin, home = '/', { timeoutMs = 25000, log 
       const items = parseRss(r.text, r.url);
       if (items.length >= ENOUGH) return { feed: { type: 'rss', url: r.url }, items, how: 'an RSS feed', intervalSec: 3600 };
     } catch {}
+  }
+
+  // 1b. A WordPress site: its REST API lists its videos with pictures.
+  if (html && /wp-json|wp-content/.test(html) && Date.now() < deadline) {
+    try {
+      const types = JSON.parse((await get(base + '/wp-json/wp/v2/types', 'application/json')).text);
+      const type = wpVideoType(types);
+      if (type) {
+        const rest = types[type]?._links?.['wp:items']?.[0]?.href || `${base}/wp-json/wp/v2/${type === 'post' ? 'posts' : type}`;
+        const listUrl = `${rest}${rest.includes('?') ? '&' : '?'}per_page=50&_embed=1`;
+        const items = parseWpList(JSON.parse((await get(listUrl, 'application/json')).text), listUrl);
+        if (items.length >= ENOUGH) return { feed: { type: 'wp', url: listUrl }, items, how: 'its WordPress list of videos', intervalSec: 3600 };
+      }
+    } catch (e) { log('discover', 'wordpress', e.message); }
   }
 
   // 2. Sitemaps from robots.txt: video entries, else plain page lists under content paths.

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { search } from '../shell/js/search.js';
+import { mixBySource } from '../shell/js/catalog.js';
 
 const items = ['The Quiet Harbour', 'Harbour Lights & Fog', 'Northern Lights', 'Copper Sky', 'Salt and Signal', 'Orbital Decay']
   .map((title, i) => ({ id: String(i), title, sources: [] }));
@@ -24,3 +25,10 @@ test('diacritics and punctuation are ignored', () => {
 });
 
 test('empty query yields nothing', () => { assert.deepEqual(titles('   '), []); });
+
+test('a row takes titles in turns across sources, keeping each source\'s own order', () => {
+  const it = (id, src) => ({ id, sources: [{ sourceId: src }] });
+  const mixed = mixBySource([it('t1', 'tubi'), it('t2', 'tubi'), it('t3', 'tubi'), it('a1', 'archive'), it('p1', 'pluto'), it('a2', 'archive')]);
+  assert.deepEqual(mixed.map((x) => x.id), ['t1', 'a1', 'p1', 't2', 'a2', 't3']);
+  assert.deepEqual(mixBySource([]), []);
+});

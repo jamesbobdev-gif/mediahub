@@ -44,12 +44,17 @@ test('removing a source drops the titles only it provided and re-sends shared on
   ]);
   const head = c.seq;
   assert.equal(c.count(), 2);
-  assert.deepEqual(c.removeSource('a'), { removed: 1, kept: 1 });
+  c.setArtworkHash('http://a/1.jpg', 'abc', 300, 450);
+  c.upsertMany([normaliseRecord({ title: 'Only On A (2019)', url: 'http://a/2', image: 'http://a/2.jpg' }, 'a')]);
+  c.setArtworkHash('http://a/2.jpg', 'def', 300, 450);
+  const r = c.removeSource('a');
+  assert.deepEqual({ removed: r.removed, kept: r.kept }, { removed: 1, kept: 1 });
+  assert.deepEqual(r.orphanHashes, ['def'], 'the poster only the removed title used; the shared title keeps its own');
   assert.equal(c.count(), 1);
   const delta = c.since(head);
   assert.equal(delta.items.length, 1);
   assert.deepEqual(delta.items[0].sources.map((s) => s.sourceId), ['b']);
-  assert.deepEqual(c.removeSource('zzz'), { removed: 0, kept: 0 });
+  assert.deepEqual(c.removeSource('zzz'), { removed: 0, kept: 0, orphanHashes: [] });
   c.close();
 });
 

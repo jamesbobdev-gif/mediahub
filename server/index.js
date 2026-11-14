@@ -114,8 +114,9 @@ async function route(req, res) {
     removeSource(SOURCES_FILE, id);
     reloadConfig('source-removed');
     const titles = catalog.removeSource(id);
-    log('source removed', id, `titles removed ${titles.removed}, kept ${titles.kept}`);
-    return json(res, 200, { id, removed: true, titles });
+    for (const h of titles.orphanHashes || []) artwork.forget(h).catch(() => {});
+    log('source removed', id, `titles removed ${titles.removed}, kept ${titles.kept}, posters ${titles.orphanHashes?.length || 0}`);
+    return json(res, 200, { id, removed: true, titles: { removed: titles.removed, kept: titles.kept, posters: titles.orphanHashes?.length || 0 } });
   }
   // Find what the hub can pull titles from for a source (structured data, RSS, video sitemaps),
   // store it as the source's feed, and pull it now so the home screen fills in.

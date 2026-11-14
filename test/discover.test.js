@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseJsonLd, parsePageData, parseRss, parseSitemap, parseOpenGraph, parseCards, parseFrontPage, fetchFrontPage, feedCandidates, sitemapCandidates, kindFromUrl, titleFromUrl, discoverFeed, READER_UA } from '../server/ingest/discover.js';
+import { parseJsonLd, parsePageData, parseRss, parseSitemap, parseOpenGraph, parseCards, parseFrontPage, fetchFrontPage, feedCandidates, sitemapCandidates, kindFromUrl, titleFromUrl, discoverFeed, READER_UA, wpVideoType, parseWpList, archiveCollectionFeed } from '../server/ingest/discover.js';
 import { adapterFor } from '../server/ingest/adapters.js';
 
 const rss = `<?xml version="1.0"?><rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>Films</title>
@@ -213,4 +213,38 @@ test('the finder takes the front page over everything else when it has enough ca
   assert.deepEqual(r.feed, { type: 'frontpage', url: 'https://site.test/' });
   assert.equal(r.intervalSec, 3600);
   assert.ok(adapterFor({ id: 'f', feed: r.feed }).featured);
+});
+
+test('a WordPress site: the video type is picked and its list becomes titles with pictures', () => {
+  assert.equal(wpVideoType({ post: {}, page: {}, video: {}, playlist: {} }), 'video');
+  assert.equal(wpVideoType({ post: {}, page: {} }), 'post');
+  assert.equal(wpVideoType({ page: {} }), null);
+  const list = [
+    { type: 'video', date: '2026-10-20T10:19:23', link: 'https://site.test/video/moon-base/', title: { rendered: 'Moon Base, The Series | Lunar Rovers' }, _embedded: { 'wp:featuredmedia': [{ source_url: 'https://site.test/up/full.jpg', media_details: { sizes: { large: { source_url: 'https://site.test/up/large.jpg' } } } }] } },
+    { type: 'video', link: '/video/two/', title: { rendered: 'Two &amp; a half' } },
+    { type: 'video', title: { rendered: 'no link' } },
+  ];
+  const items = parseWpList(list, 'https://site.test/wp-json/wp/v2/video');
+  assert.deepEqual(items.map((i) => [i.title, i.url, i.image, i.year]), [
+    ['Moon Base, The Series | Lunar Rovers', 'https://site.test/video/moon-base/', 'https://site.test/up/large.jpg', '2026'],
+    ['Two & a half', 'https://site.test/video/two/', undefined, undefined],
+  ]);
+});
+
+test('an Internet Archive collection page maps to the archive\'s search feed', () => {
+  assert.match(archiveCollectionFeed('https://archive.org', '/details/classic_tv'), /advancedsearch\.php\?q=collection%3Aclassic_tv%20AND%20mediatype%3Amovies/);
+  assert.equal(archiveCollectionFeed('https://archive.org', '/'), null);
+  assert.equal(archiveCollectionFeed('https://tubitv.com', '/details/x'), null);
+});
+
+test('the finder uses the archive feed and the WordPress list before anything else', async () => {
+  const quiet = { timeoutMs: 5000 };
+  const rssFive2 = `<rss><channel>${Array.from({ length: 5 }, (_, i) => `<item><title>Film ${i}</title><link>https://archive.org/details/f${i}</link></item>`).join('')}</channel></rss>`;
+  const feedUrl = archiveCollectionFeed('https://archive.org', '/details/classic_tv');
+  let r = await discoverFeed('https://archive.org', '/details/classic_tv', { ...quiet, fetchText: fakeFetch({ [feedUrl]: rssFive2 }) });
+  assert.deepEqual(r.feed, { type: 'rss', url: feedUrl });
+  const wpList = JSON.stringify(Array.from({ length: 5 }, (_, i) => ({ type: 'video', link: `https://site.test/video/${i}/`, title: { rendered: `V${i}` }, _embedded: { 'wp:featuredmedia': [{ source_url: `https://site.test/${i}.jpg` }] } })));
+  r = await discoverFeed('https://site.test', '/', { ...quiet, fetchText: fakeFetch({ 'https://site.test/': '<html><link rel="https://api.w.org/" href="/wp-json/"><script src="/wp-content/x.js"></script></html>', 'https://site.test/wp-json/wp/v2/types': JSON.stringify({ post: {}, video: { _links: { 'wp:items': [{ href: 'https://site.test/wp-json/wp/v2/video' }] } } }), 'https://site.test/wp-json/wp/v2/video?per_page=50&_embed=1': wpList }) });
+  assert.equal(r.feed.type, 'wp');
+  assert.equal(r.items.length, 5);
 });

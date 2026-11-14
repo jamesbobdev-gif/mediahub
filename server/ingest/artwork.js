@@ -73,6 +73,14 @@ export class ArtworkStore {
   }
 
   /** LRU sweep by mtime down to the budget. Caller runs this only when idle. */
+  /** Drop every file of a poster no title uses any more. */
+  async forget(hash) {
+    if (!/^[0-9a-f]{40}$/.test(hash)) return;
+    let names = [];
+    try { names = await readdir(this.dir); } catch { return; }
+    for (const n of names) if (n === `${hash}.bin` || n.startsWith(`${hash}_`)) { try { await unlink(path.join(this.dir, n)); } catch {} }
+  }
+
   async sweep() {
     const entries = [];
     for (const name of await readdir(this.dir)) {

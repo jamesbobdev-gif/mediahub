@@ -3,7 +3,7 @@
 // manifest (feed.url, feed.items, feed.map) so a new provider is config, not code.
 
 import { normaliseRecord } from './normalise.js';
-import { fetchText, fetchFrontPage, parseJsonLd, parsePageData, parseRss, parseSitemap, parseOpenGraph, ITEMS_PER_FILE, SITEMAP_FILES } from './discover.js';
+import { fetchText, fetchFrontPage, parseJsonLd, parsePageData, parseRss, parseSitemap, parseOpenGraph, ITEMS_PER_FILE, SITEMAP_FILES, parseWpList } from './discover.js';
 
 export function getPath(obj, path) {
   if (!path) return undefined;
@@ -160,6 +160,7 @@ export function discoveredAdapter(source, { minIntervalMs = 500, log = () => {},
       else if (feed.type === 'jsonld') { yield records(parseJsonLd((await get(feed.url)).text, feed.url)); }
       else if (feed.type === 'pagedata') { yield records(parsePageData((await get(feed.url)).text, feed.url)); }
       else if (feed.type === 'rss') { const r = await get(feed.url, 'application/rss+xml,application/atom+xml,application/xml'); yield records(parseRss(r.text, r.url)); }
+      else if (feed.type === 'wp') { const r = await get(feed.url, 'application/json'); yield records(parseWpList(JSON.parse(r.text), r.url)); }
       else if (feed.type === 'sitemap' || feed.type === 'pages') {
         const files = (feed.files || [feed.url]).slice(0, SITEMAP_FILES);
         const done = enriched.get(source.id) || new Set();
@@ -191,7 +192,7 @@ export function discoveredAdapter(source, { minIntervalMs = 500, log = () => {},
 
 export function adapterFor(source, opts) {
   if (!source.feed?.url) return null;
-  if (['frontpage', 'jsonld', 'pagedata', 'rss', 'sitemap', 'pages'].includes(source.feed.type)) return discoveredAdapter(source, opts);
+  if (['frontpage', 'jsonld', 'pagedata', 'rss', 'sitemap', 'pages', 'wp'].includes(source.feed.type)) return discoveredAdapter(source, opts);
   if (source.feed.type === 'html' || source.feed.itemRegex) return htmlListAdapter(source, opts);
   return jsonFeedAdapter(source, opts);
 }

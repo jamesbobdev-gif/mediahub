@@ -8,7 +8,7 @@ import { KEY_ROWS } from './search.js';
 
 export const ADDRESS_KEYS = [...KEY_ROWS.slice(0, 4), ['.', '-', '/', ':', '_'], ['space', 'back', 'clear', 'next']];
 const KEY_LABELS = { space: 'space', back: '⌫  delete', clear: '✕  clear', next: 'next field' };
-const FEED_HOW = { jsonld: 'the lists on its page', pagedata: 'the lists on its page', rss: 'its RSS feed', sitemap: 'its video sitemap', pages: 'the list of its pages', html: 'its list page', json: 'its feed' };
+const FEED_HOW = { jsonld: 'the lists on its page', pagedata: 'the lists on its page', rss: 'its RSS feed', sitemap: 'its video sitemap', pages: 'the list of its pages', wp: 'its WordPress list', html: 'its list page', json: 'its feed' };
 const KIND_LABELS = { script: 'script', xhr: 'data', other: 'data', document: 'page', iframe: 'frame', style: 'style', image: 'image', font: 'font', media: 'video' };
 const LIMITS = { name: 40, address: 200 };
 

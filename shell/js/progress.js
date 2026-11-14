@@ -21,3 +21,18 @@ export const progress = {
   remove(key) { const map = load(); delete map[key]; store(map); },
   list() { const map = load(); return Object.entries(map).map(([key, v]) => ({ key, ...v })).sort((a, b) => b.at - a.at); },
 };
+
+// What was opened lately, across every source: titles from the home screen and source pages
+// opened from their cards. Newest first, a short list, in localStorage like the positions.
+const HIST = 'hub:history', HIST_MAX = 30;
+function loadHist() { try { return JSON.parse(localStorage.getItem(HIST) || '[]'); } catch { return []; } }
+export const history = {
+  add({ key, title, portalUrl, itemId = null, sourceId = null, kind = 'title' }) {
+    if (!key || !portalUrl) return;
+    const list = loadHist().filter((h) => h.key !== key);
+    list.unshift({ key, title, portalUrl, itemId, sourceId, kind, at: Date.now() });
+    try { localStorage.setItem(HIST, JSON.stringify(list.slice(0, HIST_MAX))); } catch {}
+  },
+  list() { return loadHist(); },
+  remove(key) { try { localStorage.setItem(HIST, JSON.stringify(loadHist().filter((h) => h.key !== key))); } catch {} },
+};

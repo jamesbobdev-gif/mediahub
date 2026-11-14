@@ -320,6 +320,14 @@ export function createProxy({ sources, filters, log = () => {}, cacheMb = DEFAUL
       up = await fetch(upstream, { method: req.method, headers, body, redirect: 'manual', duplex: body ? 'half' : undefined });
     } catch (e) {
       log('upstream-error', upstream.href, e.message);
+      // A page the hub could not reach: a hub page saying so, which the shell treats like any other
+      // page (Back leaves it), instead of a bare error the shell would take for an escaped frame.
+      if (destination === 'document' && firstParty) {
+        const page = `<!doctype html><html><head><meta charset="utf-8"><title>Could not reach ${source.name || source.id}</title><style>body{margin:0;background:#0b0b0e;color:#ececf1;font:28px/1.4 system-ui,sans-serif;display:grid;place-items:center;height:100vh}div{max-width:900px;padding:40px;text-align:center}small{color:#8b8f9c;font-size:20px}</style></head><body><div><p>The hub could not reach ${source.name || source.id}.</p><small>${upstream.hostname} did not answer. Press Back, and try again in a moment.</small></div></body></html>`;
+        res.writeHead(502, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-hub-source': source.id, 'content-security-policy': `${req.hubShellOrigin ? `frame-ancestors ${req.hubShellOrigin}; ` : ''}default-src 'self' 'unsafe-inline'` });
+        res.end(rewriteHtml(page, source, upstream.href, req.hubShellOrigin));
+        return;
+      }
       res.writeHead(502, { 'content-type': 'text/plain' }).end(`upstream error: ${e.message}`);
       return;
     }

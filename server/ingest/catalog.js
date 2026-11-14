@@ -55,6 +55,8 @@ export class Catalog {
       orphans: this.db.prepare('SELECT id FROM items WHERE NOT EXISTS (SELECT 1 FROM item_sources WHERE item_id = items.id)'),
       dropItem: this.db.prepare('DELETE FROM items WHERE id = ?'),
       dropArt: this.db.prepare('DELETE FROM artwork WHERE item_id = ?'),
+      hashesOf: this.db.prepare('SELECT DISTINCT hash FROM artwork WHERE item_id = ? AND hash IS NOT NULL'),
+      hashInUse: this.db.prepare('SELECT 1 FROM artwork WHERE hash = ? LIMIT 1'),
     };
     this.seq = this.q.maxSeq.get().seq;
   }
@@ -146,12 +148,14 @@ export class Catalog {
    *  also has stay and are re-sent to the TV so their source list shrinks. Returns {removed, kept}. */
   removeSource(sourceId) {
     const touched = this.q.itemsOf.all(sourceId).map((r) => r.item_id);
-    const res = { removed: 0, kept: 0 };
+    const res = { removed: 0, kept: 0, orphanHashes: [] };
     this.db.exec('BEGIN');
     try {
       this.q.dropSource.run(sourceId);
       const gone = new Set(this.q.orphans.all().map((r) => r.id));
-      for (const id of gone) { this.q.dropArt.run(id); this.q.dropItem.run(id); res.removed++; }
+      const hashes = new Set();
+      for (const id of gone) { for (const r of this.q.hashesOf.all(id)) hashes.add(r.hash); this.q.dropArt.run(id); this.q.dropItem.run(id); res.removed++; }
+      for (const h of hashes) if (!this.q.hashInUse.get(h)) res.orphanHashes.push(h);   // posters no title uses any more
       for (const id of touched) if (!gone.has(id)) { this.seq++; this.q.touch.run(this.seq, id); res.kept++; }
       this.db.exec('COMMIT');
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }

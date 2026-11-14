@@ -41,6 +41,24 @@ const tx = (db, store, mode, fn) => new Promise((resolve, reject) => {
   t.oncomplete = () => resolve(r && r.result !== undefined ? r.result : r); t.onerror = () => reject(t.error);
 });
 
+/** Items in turns across their sources (Tubi, Archive, Pluto, Tubi, Archive, ...), each source's own
+ *  order kept, so one big feed does not fill the front of a row and push the others out of reach. */
+export function mixBySource(items) {
+  const lanes = new Map();
+  for (const it of items) {
+    const id = it.sources?.[0]?.sourceId || '';
+    if (!lanes.has(id)) lanes.set(id, []);
+    lanes.get(id).push(it);
+  }
+  const out = [];
+  const queues = [...lanes.values()];
+  for (let i = 0; out.length < items.length; i++) {
+    const q = queues[i % queues.length];
+    if (q.length) out.push(q.shift());
+  }
+  return out;
+}
+
 export class CatalogCache {
   constructor({ api = '/api' } = {}) { this.api = api; this.db = null; this.items = new Map(); this.cursor = 0; }
 
