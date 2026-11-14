@@ -28,20 +28,24 @@ export class Catalog {
       );
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
     `);
+    // rank: where the title sits on that source's front page (1 = first card); NULL when it is not on it.
+    if (!this.db.prepare('PRAGMA table_info(item_sources)').all().some((c) => c.name === 'rank')) this.db.exec('ALTER TABLE item_sources ADD COLUMN rank INTEGER');
     this.q = {
       byId: this.db.prepare('SELECT * FROM items WHERE id = ?'),
       candidates: this.db.prepare('SELECT id, title_key FROM items WHERE kind = ? AND (year = ? OR year IS NULL OR ? IS NULL)'),
       insert: this.db.prepare('INSERT INTO items (id, kind, title, title_key, year, season, episode, raw_title, seq) VALUES (?,?,?,?,?,?,?,?,?)'),
       touch: this.db.prepare('UPDATE items SET seq = ? WHERE id = ?'),
       fillYear: this.db.prepare('UPDATE items SET year = ? WHERE id = ? AND year IS NULL'),
-      sourceRow: this.db.prepare('SELECT item_url FROM item_sources WHERE item_id = ? AND source_id = ?'),
-      upsertSource: this.db.prepare('INSERT INTO item_sources (item_id, source_id, item_url, seen_at) VALUES (?,?,?,?) ON CONFLICT(item_id, source_id) DO UPDATE SET item_url = excluded.item_url, seen_at = excluded.seen_at'),
+      sourceRow: this.db.prepare('SELECT item_url, rank FROM item_sources WHERE item_id = ? AND source_id = ?'),
+      upsertSource: this.db.prepare('INSERT INTO item_sources (item_id, source_id, item_url, seen_at, rank) VALUES (?,?,?,?,?) ON CONFLICT(item_id, source_id) DO UPDATE SET item_url = excluded.item_url, seen_at = excluded.seen_at, rank = excluded.rank'),
+      ranked: this.db.prepare('SELECT item_id FROM item_sources WHERE source_id = ? AND rank IS NOT NULL'),
+      unrank: this.db.prepare('UPDATE item_sources SET rank = NULL WHERE item_id = ? AND source_id = ?'),
       artRow: this.db.prepare('SELECT 1 FROM artwork WHERE item_id = ? AND url = ?'),
       upsertArt: this.db.prepare('INSERT OR IGNORE INTO artwork (item_id, url) VALUES (?,?)'),
       setArtHash: this.db.prepare('UPDATE artwork SET hash = ?, w = ?, h = ? WHERE url = ?'),
       maxSeq: this.db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM items'),
       since: this.db.prepare('SELECT * FROM items WHERE seq > ? ORDER BY seq LIMIT ?'),
-      sourcesFor: this.db.prepare('SELECT source_id, item_url, seen_at FROM item_sources WHERE item_id = ?'),
+      sourcesFor: this.db.prepare('SELECT source_id, item_url, seen_at, rank FROM item_sources WHERE item_id = ?'),
       artFor: this.db.prepare('SELECT url, hash, w, h FROM artwork WHERE item_id = ?'),
       pendingArt: this.db.prepare('SELECT url FROM artwork WHERE hash IS NULL LIMIT ?'),
       artOwners: this.db.prepare('SELECT item_id FROM artwork WHERE url = ?'),
@@ -66,15 +70,18 @@ export class Catalog {
     return bestScore >= FUZZY_THRESHOLD ? best : null;
   }
 
-  /** Upsert a batch in one transaction. Returns {inserted, merged, changed}. The sequence (and
-   *  therefore the TV's delta) only moves when a source link or artwork actually changed. */
+  /** Upsert a batch in one transaction. Returns {inserted, merged, changed, ids}, where ids maps
+   *  each candidate's id to the id it was stored under (another one when it merged into an existing
+   *  title). The sequence (and therefore the TV's delta) only moves when a source link, its place
+   *  on the front page, or artwork actually changed. */
   upsertMany(items) {
-    const res = { inserted: 0, merged: 0, changed: 0 };
+    const res = { inserted: 0, merged: 0, changed: 0, ids: new Map() };
     this.db.exec('BEGIN');
     try {
       for (const item of items) {
         const existing = this.match(item);
         const id = existing || item.id;
+        res.ids.set(item.id, id);
         let changed = !existing;
         if (existing) res.merged++;
         else {
@@ -84,8 +91,8 @@ export class Catalog {
         }
         for (const s of item.sources) {
           const prev = this.q.sourceRow.get(id, s.sourceId);
-          if (!prev || prev.item_url !== (s.itemUrl ?? null)) changed = true;
-          this.q.upsertSource.run(id, s.sourceId, s.itemUrl ?? null, s.seenAt);
+          if (!prev || prev.item_url !== (s.itemUrl ?? null) || prev.rank !== (s.rank ?? null)) changed = true;
+          this.q.upsertSource.run(id, s.sourceId, s.itemUrl ?? null, s.seenAt, s.rank ?? null);
         }
         for (const a of item.artwork) {
           if (!this.q.artRow.get(id, a.url)) { changed = true; this.q.upsertArt.run(id, a.url); }
@@ -104,7 +111,7 @@ export class Catalog {
     const rows = this.q.since.all(cursor, limit);
     const items = rows.map((r) => ({
       id: r.id, kind: r.kind, title: r.title, year: r.year, season: r.season, episode: r.episode,
-      sources: this.q.sourcesFor.all(r.id).map((s) => ({ sourceId: s.source_id, itemUrl: s.item_url, seenAt: s.seen_at })),
+      sources: this.q.sourcesFor.all(r.id).map((s) => ({ sourceId: s.source_id, itemUrl: s.item_url, seenAt: s.seen_at, rank: s.rank })),
       artwork: this.q.artFor.all(r.id).map((a) => ({ url: a.url, hash: a.hash, w: a.w, h: a.h })),
       seq: r.seq,
     }));
@@ -119,6 +126,22 @@ export class Catalog {
     for (const r of this.q.artOwners.all(url)) { this.seq++; this.q.touch.run(this.seq, r.item_id); }
   }
   count() { return this.q.count.get().n; }
+  /** After a front-page pull: titles of this source that were on the page but are not any more
+   *  lose their place, and are re-sent to the TV. `keep` is the ids that are still on it. */
+  unfeature(sourceId, keep) {
+    const keepSet = new Set(keep);
+    let n = 0;
+    this.db.exec('BEGIN');
+    try {
+      for (const r of this.q.ranked.all(sourceId)) {
+        if (keepSet.has(r.item_id)) continue;
+        this.q.unrank.run(r.item_id, sourceId);
+        this.seq++; this.q.touch.run(this.seq, r.item_id); n++;
+      }
+      this.db.exec('COMMIT');
+    } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+    return n;
+  }
   /** A source was removed: forget its links. Titles it alone provided go; titles another source
    *  also has stay and are re-sent to the TV so their source list shrinks. Returns {removed, kept}. */
   removeSource(sourceId) {

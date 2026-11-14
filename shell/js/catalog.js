@@ -4,6 +4,24 @@
 
 const DB = 'mediahub', STORE = 'items', META = 'meta';
 
+/**
+ * The titles each source shows on its own front page: one entry per source that has any, in the
+ * order the sources are given, each with its titles in the order the page shows them (the rank the
+ * hub stored on the title's link to that source). A title on two front pages is in both.
+ */
+export function featuredRows(items, sources) {
+  const out = [];
+  for (const source of sources) {
+    const ranked = [];
+    for (const it of items) {
+      const link = (it.sources || []).find((s) => s.sourceId === source.id && s.rank != null);
+      if (link) ranked.push({ it, rank: link.rank });
+    }
+    if (ranked.length) out.push({ source, items: ranked.sort((a, b) => a.rank - b.rank).map((r) => r.it) });
+  }
+  return out;
+}
+
 function open() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB, 1);

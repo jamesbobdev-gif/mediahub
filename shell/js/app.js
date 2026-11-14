@@ -2,7 +2,7 @@ import { installKeyRouter, registerPlatformKeys, PLATFORM } from './keymap.js';
 import { pickNext, refind } from './spatial.js';
 import { VirtualCursor } from './cursor.js';
 import { Player } from './player.js';
-import { CatalogCache, ArtworkLru } from './catalog.js';
+import { CatalogCache, ArtworkLru, featuredRows } from './catalog.js';
 import { PortalFrame } from './portal.js';
 import { progress } from './progress.js';
 import { search, KEY_ROWS } from './search.js';
@@ -104,13 +104,17 @@ function renderHome() {
   const items = visibleItems();
   $('#home-count').textContent = `${items.length} titles · ${state.sources.length} sources`;
   const sub = (it) => [it.year, it.kind === 'episode' && it.season != null ? `S${it.season}E${it.episode ?? '?'}` : null, it.sources.map((s) => s.sourceId).join(', ')].filter(Boolean).join(' · ');
-  const byKind = (k) => items.filter((i) => i.kind === k).map((it) => tile({ id: it.id, title: it.title, sub: sub(it) }));
+  // What each source shows on its own front page comes first, one row per source, in the page's order.
+  const front = featuredRows(items, state.sources);
+  const onFront = new Set(front.flatMap((f) => f.items.map((it) => it.id)));
+  const frontRows = front.map((f) => row(`${f.source.name} front page`, f.items.map((it) => tile({ id: it.id, title: it.title, sub: sub(it) }))));
+  const byKind = (k) => items.filter((i) => i.kind === k && !onFront.has(i.id)).map((it) => tile({ id: it.id, title: it.title, sub: sub(it) }));
   const cont = progress.list().map((p) => tile({ key: p.key, id: p.itemId, portal: p.portalUrl, title: p.title, sub: `${fmtMin(p.d - p.t)} left`, pct: p.t / p.d }));
   const countFor = (id) => items.filter((i) => i.sources.some((s) => s.sourceId === id)).length;
   const srcs = state.sources.map((s) => tile({ portal: s.home, title: s.name, sub: `${countFor(s.id)} titles · open portal`, icon: '⌂', online: true }));
   const searchTile = tile({ title: 'Search', sub: `${items.length} titles across ${state.sources.length} sources`, icon: '⌕' }); searchTile.dataset.search = '';
   const settingsTile = tile({ title: 'Settings', sub: 'Add or remove sources, allow what they need', icon: '⚙' }); settingsTile.dataset.settings = '';
-  for (const r of [row('Continue watching', cont), row('Sources', [searchTile, ...srcs, settingsTile]), row('Movies', byKind('movie')), row('Series', byKind('series')), row('Episodes', byKind('episode'))]) if (r) rows.appendChild(r);
+  for (const r of [row('Continue watching', cont), row('Sources', [searchTile, ...srcs, settingsTile]), ...frontRows, row('Movies', byKind('movie')), row('Series', byKind('series')), row('Episodes', byKind('episode'))]) if (r) rows.appendChild(r);
   lazyArtwork($('#rows'));
 }
 const fmtMin = (s) => `${Math.max(1, Math.round(s / 60))} min`;

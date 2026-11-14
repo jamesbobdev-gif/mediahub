@@ -117,6 +117,7 @@ export function normaliseRecord(rec, sourceId) {
     season: parsed.season,
     episode: parsed.episode,
     artwork: rec.image ? [{ url: rec.image }] : [],
-    sources: [{ sourceId, itemUrl: rec.url, seenAt: Date.now() }],
+    // rank: the title's place on the source's front page (1 = first card), when it is on it.
+    sources: [{ sourceId, itemUrl: rec.url, seenAt: Date.now(), rank: rec.rank ?? null }],
   };
 }

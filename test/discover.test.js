@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseJsonLd, parsePageData, parseRss, parseSitemap, parseOpenGraph, feedCandidates, sitemapCandidates, kindFromUrl, titleFromUrl, discoverFeed } from '../server/ingest/discover.js';
+import { parseJsonLd, parsePageData, parseRss, parseSitemap, parseOpenGraph, parseCards, parseFrontPage, fetchFrontPage, feedCandidates, sitemapCandidates, kindFromUrl, titleFromUrl, discoverFeed, READER_UA } from '../server/ingest/discover.js';
 import { adapterFor } from '../server/ingest/adapters.js';
 
 const rss = `<?xml version="1.0"?><rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>Films</title>
@@ -138,4 +138,79 @@ test('a discovered sitemap feed is pulled through the adapter, the judged sitema
   assert.ok(adapterFor({ id: 'p', feed: { type: 'pages', url: 'https://site.test/sm.xml', files: [] } }));
   assert.ok(adapterFor({ id: 'd', feed: { type: 'pagedata', url: 'https://site.test/' } }));
   assert.equal(adapterFor({ id: 'x' }), null);
+});
+
+// ---------- front page cards ----------
+
+const cardsPage = `<html><head><title>Site</title><script>window.x = {"a":1}</script></head><body>
+<nav><a href="/">Home</a><a href="/movies">Movies</a><a href="https://other.test/partner"><img src="/p.jpg" alt="Partner"></a></nav>
+<section class="hero"><a aria-label="Blade II (2002)" href="/movie/blade-ii-2002?context=hero"></a><div><img alt="" src="/hero.jpg"></div></section>
+<section class="row"><h2>Trending</h2>
+${Array.from({ length: 6 }, (_, i) => `<a href="/movies/${100 + i}/title-${i}"><img alt="Title ${i} &amp; More" src="data:image/gif;base64,R0lGOD" data-src="/t/${i}.jpg"></a>`).join('')}
+<a href="/movies/100/title-0"><img alt="Title 0 again" src="/t/0.jpg"></a>
+<a href="/about/"><img src="/about.jpg" alt="About us"></a>
+<a href="/series/9/show"><picture><source srcset="/s9.webp 1x, /s9@2x.webp 2x"><img alt="Show Nine" src="/s9.jpg"></picture></a>
+</section></body></html>`;
+
+test('front page cards: links with pictures, in page order, named by the page, lazy pictures and hero layouts included', () => {
+  const cards = parseCards(cardsPage, 'https://www.site.test/');
+  assert.deepEqual(cards.map((c) => c.title), ['Blade II (2002)', 'Title 0 & More', 'Title 1 & More', 'Title 2 & More', 'Title 3 & More', 'Title 4 & More', 'Title 5 & More', 'Show Nine']);
+  assert.equal(cards[0].url, 'https://www.site.test/movie/blade-ii-2002?context=hero');
+  assert.equal(cards[0].image, 'https://www.site.test/hero.jpg', 'a hero card has its picture just after the link');
+  assert.equal(cards[0].kind, 'movie');
+  assert.equal(cards[1].image, 'https://www.site.test/t/0.jpg', 'the lazy picture, not the placeholder');
+  assert.equal(cards[7].image, 'https://www.site.test/s9.webp');
+  assert.equal(cards[7].kind, 'series');
+  assert.ok(!cards.some((c) => /about|partner|home/i.test(c.title)), 'menus, promo tiles and other sites are not cards');
+});
+
+test('front page cards: a page that puts each picture before its link keeps the right poster on each card', () => {
+  const html = `<ul>${Array.from({ length: 6 }, (_, i) => `<li><img src="/pic/${i}.jpg"><a href="/videos/${i}">Video ${i}</a></li>`).join('')}</ul>`;
+  const cards = parseCards(html, 'https://site.test/home');
+  assert.equal(cards.length, 6);
+  assert.deepEqual(cards.map((c) => c.image), Array.from({ length: 6 }, (_, i) => `https://site.test/pic/${i}.jpg`));
+});
+
+test('front page cards: a page with no content paths keeps every pictured link; fewer than twelve is a menu, not rows', () => {
+  const html = `<div>${Array.from({ length: 4 }, (_, i) => `<a href="/thing/${i}"><img src="/${i}.jpg" alt="Thing ${i}"></a>`).join('')}</div>`;
+  assert.equal(parseCards(html, 'https://site.test/').length, 4);
+  assert.deepEqual(parseFrontPage(html, 'https://site.test/'), []);
+  assert.equal(parseFrontPage(cardsPage, 'https://www.site.test/').length, 0);
+  const big = cardsPage.replace('</section></body>', Array.from({ length: 8 }, (_, i) => `<a href="/movies/${200 + i}/more-${i}"><img alt="More ${i}" src="/m/${i}.jpg"></a>`).join('') + '</section></body>');
+  const items = parseFrontPage(big, 'https://www.site.test/');
+  assert.equal(items.length, 16);
+  assert.equal(items[0].title, 'Blade II (2002)');
+});
+
+test('a page embedding its state with undefined values still gives up its tiles', () => {
+  const tiles = Array.from({ length: 6 }, (_, i) => `{"name":"Tile ${i}","href":"/movies/${i}","thumb":"/t${i}.jpg","extra":undefined}`).join(',');
+  const html = `<html><script>window.__data={"ui":{"x":undefined},"rows":[${tiles}]};</script></html>`;
+  assert.equal(parsePageData(html, 'https://site.test/').length, 6);
+});
+
+const shell = '<html><body><div id="app"></div></body></html>';
+const rendered = `<html><body>${Array.from({ length: 14 }, (_, i) => `<a href="/movies/${i}/film-${i}"><img alt="Film ${i}" src="/f${i}.jpg"></a>`).join('')}</body></html>`;
+
+test('an empty app shell is asked for again as the hub itself, and the finder remembers which way worked', async () => {
+  const asked = [];
+  const ft = async (url, { ua } = {}) => { asked.push(ua || 'browser'); return { text: ua === READER_UA ? rendered : shell, type: 'text/html', url }; };
+  const r = await fetchFrontPage('https://site.test/', { fetchText: ft });
+  assert.equal(r.items.length, 14);
+  assert.equal(r.reader, true);
+  assert.deepEqual(asked, ['browser', READER_UA]);
+  const again = await fetchFrontPage('https://site.test/', { fetchText: ft, reader: true });
+  assert.equal(again.items.length, 14);
+  assert.equal(asked.length, 3, 'a feed marked reader skips the browser try');
+  const found = await discoverFeed('https://site.test', '/', { timeoutMs: 5000, fetchText: ft });
+  assert.deepEqual(found.feed, { type: 'frontpage', url: 'https://site.test/', reader: true });
+  assert.equal(found.how, 'the rows on its front page');
+  assert.equal(found.items[0].title, 'Film 0');
+});
+
+test('the finder takes the front page over everything else when it has enough cards', async () => {
+  const withLd = rendered.replace('<body>', `<body><script type="application/ld+json">{"@type":"ItemList","itemListElement":[${Array.from({ length: 6 }, (_, i) => `{"name":"X${i}","url":"/x/${i}"}`).join(',')}]}</script>`);
+  const r = await discoverFeed('https://site.test', '/', { timeoutMs: 5000, fetchText: fakeFetch({ 'https://site.test/': withLd }) });
+  assert.deepEqual(r.feed, { type: 'frontpage', url: 'https://site.test/' });
+  assert.equal(r.intervalSec, 3600);
+  assert.ok(adapterFor({ id: 'f', feed: r.feed }).featured);
 });

@@ -3,7 +3,7 @@
 // manifest (feed.url, feed.items, feed.map) so a new provider is config, not code.
 
 import { normaliseRecord } from './normalise.js';
-import { fetchText, parseJsonLd, parsePageData, parseRss, parseSitemap, parseOpenGraph, ITEMS_PER_FILE, SITEMAP_FILES } from './discover.js';
+import { fetchText, fetchFrontPage, parseJsonLd, parsePageData, parseRss, parseSitemap, parseOpenGraph, ITEMS_PER_FILE, SITEMAP_FILES } from './discover.js';
 
 export function getPath(obj, path) {
   if (!path) return undefined;
@@ -138,18 +138,26 @@ export function htmlListAdapter(source, { minIntervalMs = 500, log = () => {} } 
 const ENRICH_PER_RUN = 40;        // pages opened per run to put real titles and posters on page-list entries
 const enriched = new Map();       // sourceId -> Set of page urls already opened (memory only; artwork stays in the catalog)
 
-/** Feeds the finder (discover.js) sets up: structured data or embedded data on a page, an RSS feed,
- *  video sitemaps, or plain page lists whose titles and posters are read from the pages themselves. */
-export function discoveredAdapter(source, { minIntervalMs = 500, log = () => {} } = {}) {
+/** Feeds the finder (discover.js) sets up: the cards on the site's front page, structured data or
+ *  embedded data on a page, an RSS feed, video sitemaps, or plain page lists whose titles and
+ *  posters are read from the pages themselves. Front-page cards carry their place on the page
+ *  (rank, from 1) so the home screen can show them first, in that order. */
+export function discoveredAdapter(source, { minIntervalMs = 500, log = () => {}, fetchText: ft = fetchText } = {}) {
   const feed = source.feed;
   const records = (items) => items.map((rec) => normaliseRecord(rec, source.id));
   const paced = (() => { let lastAt = 0; return async () => { const wait = minIntervalMs - (Date.now() - lastAt); if (wait > 0) await sleep(wait); lastAt = Date.now(); }; })();
   return {
     id: source.id,
+    featured: feed.type === 'frontpage',
     async *pages(signal) {
-      const get = (url, accept, maxBytes) => fetchText(url, { signal, accept, maxBytes, log });
+      const get = (url, accept, maxBytes) => ft(url, { signal, accept, maxBytes, log });
       const xml = 'application/xml,text/xml;q=0.9,*/*;q=0.5';
-      if (feed.type === 'jsonld') { yield records(parseJsonLd((await get(feed.url)).text, feed.url)); }
+      if (feed.type === 'frontpage') {
+        const { items, reader } = await fetchFrontPage(feed.url, { signal, log, fetchText: ft, reader: !!feed.reader });
+        if (reader && !feed.reader) log('frontpage', source.id, 'rendered only for readers');
+        yield records(items.map((rec, i) => ({ ...rec, rank: i + 1 })));
+      }
+      else if (feed.type === 'jsonld') { yield records(parseJsonLd((await get(feed.url)).text, feed.url)); }
       else if (feed.type === 'pagedata') { yield records(parsePageData((await get(feed.url)).text, feed.url)); }
       else if (feed.type === 'rss') { const r = await get(feed.url, 'application/rss+xml,application/atom+xml,application/xml'); yield records(parseRss(r.text, r.url)); }
       else if (feed.type === 'sitemap' || feed.type === 'pages') {
@@ -183,7 +191,7 @@ export function discoveredAdapter(source, { minIntervalMs = 500, log = () => {} 
 
 export function adapterFor(source, opts) {
   if (!source.feed?.url) return null;
-  if (['jsonld', 'pagedata', 'rss', 'sitemap', 'pages'].includes(source.feed.type)) return discoveredAdapter(source, opts);
+  if (['frontpage', 'jsonld', 'pagedata', 'rss', 'sitemap', 'pages'].includes(source.feed.type)) return discoveredAdapter(source, opts);
   if (source.feed.type === 'html' || source.feed.itemRegex) return htmlListAdapter(source, opts);
   return jsonFeedAdapter(source, opts);
 }

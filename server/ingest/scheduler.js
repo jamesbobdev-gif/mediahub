@@ -5,8 +5,8 @@ import { adapterFor } from './adapters.js';
 import { ArtworkStore } from './artwork.js';
 
 export class Scheduler {
-  constructor({ sources, catalog, artwork, poolSize = 4, log = () => {} }) {
-    this.sources = sources; this.catalog = catalog; this.artwork = artwork; this.poolSize = poolSize; this.log = log;
+  constructor({ sources, catalog, artwork, poolSize = 4, log = () => {}, fetchText }) {
+    this.sources = sources; this.catalog = catalog; this.artwork = artwork; this.poolSize = poolSize; this.log = log; this.fetchText = fetchText;
     this.running = new Map(); this.timers = new Map(); this.active = 0; this.waiting = [];
     this.status = new Map();
     if (artwork) artwork.onStored = (url, hash, w, h) => catalog.setArtworkHash(url, hash, w, h);
@@ -50,19 +50,23 @@ export class Scheduler {
   }
 
   async _run(source) {
-    const adapter = adapterFor(source, { log: this.log });
+    const adapter = adapterFor(source, { log: this.log, ...(this.fetchText ? { fetchText: this.fetchText } : {}) });
     const summary = { sourceId: source.id, startedAt: Date.now(), pages: 0, items: 0, inserted: 0, merged: 0, error: null };
     this.status.set(source.id, { ...summary, state: 'running' });
     await this.acquire();
     const ctrl = new AbortController();
     let backoffFactor = 1;
+    const onPage = [];   // ids of the titles this run put on the source's front page
     try {
       for await (const items of adapter.pages(ctrl.signal)) {
         summary.pages++; summary.items += items.length;
         const r = this.catalog.upsertMany(items);
         summary.inserted += r.inserted; summary.merged += r.merged;
+        if (adapter.featured) for (const it of items) if (it.sources.some((s) => s.rank != null)) onPage.push(r.ids.get(it.id));
         if (this.artwork) for (const url of this.catalog.pendingArtwork(200)) this.artwork.enqueue(url);
       }
+      // A full front-page pull is the whole page: what is no longer on it leaves the front row.
+      if (adapter.featured && summary.pages) summary.left = this.catalog.unfeature(source.id, onPage);
     } catch (e) {
       summary.error = e.message; backoffFactor = 4;
       this.log('ingest-error', source.id, e.message);

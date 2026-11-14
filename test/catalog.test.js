@@ -60,3 +60,30 @@ test('a poster that finishes after the catalog closed is dropped, and closing tw
   assert.doesNotThrow(() => c.setArtworkHash('http://a/3.jpg', 'abc', 300, 450));
   assert.doesNotThrow(() => c.close());
 });
+
+test('a title keeps its place on a source front page until a later pull leaves it off', () => {
+  const c = new Catalog(':memory:');
+  const first = [
+    normaliseRecord({ title: 'Red Static (2018)', url: 'http://a/1', image: 'http://a/1.jpg', rank: 1 }, 'a'),
+    normaliseRecord({ title: 'Blue Hour (2019)', url: 'http://a/2', image: 'http://a/2.jpg', rank: 2 }, 'a'),
+    normaliseRecord({ title: 'Blue Hour (2019)', url: 'http://b/2' }, 'b'),
+  ];
+  let r = c.upsertMany(first);
+  assert.equal(r.ids.get(first[2].id), first[1].id, 'the merged candidate maps to the title it joined');
+  let items = c.since(0).items;
+  assert.deepEqual(items.map((i) => i.sources.find((s) => s.sourceId === 'a').rank), [1, 2]);
+  assert.equal(items[1].sources.find((s) => s.sourceId === 'b').rank, null);
+  const head = c.seq;
+  assert.equal(c.upsertMany(first).changed, 0, 'the same page again changes nothing');
+
+  // The page reorders: Blue Hour is first now, Red Static is gone from it.
+  r = c.upsertMany([normaliseRecord({ title: 'Blue Hour (2019)', url: 'http://a/2', image: 'http://a/2.jpg', rank: 1 }, 'a')]);
+  assert.equal(r.changed, 1);
+  assert.equal(c.unfeature('a', [first[1].id]), 1);
+  items = c.since(head).items;
+  assert.equal(items.length, 2, 'both the moved and the dropped title are re-sent');
+  assert.equal(items.find((i) => i.title === 'Red Static').sources[0].rank, null);
+  assert.equal(items.find((i) => i.title === 'Blue Hour').sources.find((s) => s.sourceId === 'a').rank, 1);
+  assert.equal(c.unfeature('a', [first[1].id]), 0);
+  c.close();
+});

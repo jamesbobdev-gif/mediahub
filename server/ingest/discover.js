@@ -1,16 +1,21 @@
 // Feed finder. A source added from the TV has only a name and an address; this works out what
-// the hub can pull from that site so its titles reach the home screen. It tries, in order, what
-// sites publish for exactly this purpose: structured data on the page (JSON-LD lists of videos or
-// films), the data a page embeds for its own tiles (Next.js and similar apps ship their carousels
-// as JSON in the page), an RSS or Atom feed the page points at or one at a usual path, the video
-// sitemaps listed in robots.txt, and last the plain page lists in those sitemaps, where titles come
-// from the page addresses and posters from the pages themselves, a few at a time.
+// the hub can pull from that site so its titles reach the home screen. It tries, in order: the
+// site's own front page (the title cards it shows, hero first, row by row, in the order the site
+// put them), then what sites publish for machines: structured data on the page (JSON-LD lists of
+// videos or films), the data a page embeds for its own tiles (Next.js and similar apps ship their
+// carousels as JSON in the page), an RSS or Atom feed the page points at or one at a usual path,
+// the video sitemaps listed in robots.txt, and last the plain page lists in those sitemaps, where
+// titles come from the page addresses and posters from the pages themselves, a few at a time.
 // Nothing here is site-specific: it is the same questions for every site.
 
 import { gunzipSync } from 'node:zlib';
 
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36 MediaHub/0.1';
+// Some sites answer a browser with an empty app shell and render the page only for readers that
+// are not browsers (search engines, link previews). The hub asks as itself when the shell is empty.
+export const READER_UA = 'MediaHub/0.1 (+https://github.com/jamesbobdev-gif/mediahub)';
 export const ENOUGH = 5;          // fewer titles than this is not a catalog, it is a menu
+export const FRONT_ENOUGH = 12;   // pictured cards a front page needs before it counts as the source's rows
 export const ITEMS_PER_FILE = 300; // titles taken from one sitemap file or one page of data
 export const SITEMAP_FILES = 4;   // sitemap files a source pulls per run
 const SITEMAP_LOOKS = 8;          // child sitemaps the finder opens when judging an index
@@ -19,6 +24,8 @@ const FEED_PATHS = ['/feed', '/rss', '/feed.xml', '/rss.xml', '/atom.xml', '/fee
 const SITEMAP_PATHS = ['/sitemap.xml', '/sitemap_index.xml', '/sitemap-index.xml', '/sitemaps/sitemap.xml'];
 const VIDEO_WORDS = /video|movie|film|show|series|title|watch|episode|program|content/i;
 const CONTENT_PATH = /\/(video|videos|movie|movies|film|films|show|shows|series|episode|episodes|watch|title|titles|tv-shows|tv|program|programs)\//i;
+const CARD_PATH = /\/(video|videos|movie|movies|film|films|show|shows|series|episode|episodes|watch|title|titles|tv-shows|tv|program|programs|details|detail|vod|on-demand|play|media)\//i;
+const ICON_WORDS = /\b(logo|icon|avatar|profile|button|arrow|badge)\b/i;
 
 const decode = (s) => String(s || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
   .replace(/&(amp|lt|gt|quot|apos|#39|#x27|nbsp);/g, (m, k) => ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", '#39': "'", '#x27': "'", nbsp: ' ' })[k])
@@ -49,8 +56,8 @@ export function titleFromUrl(url) {
   return s;
 }
 
-export async function fetchText(url, { signal, accept = 'text/html,application/xml,application/rss+xml,application/json;q=0.9,*/*;q=0.5', maxBytes = 8 * 1024 ** 2, log = () => {} } = {}) {
-  const res = await fetch(url, { signal, headers: { 'user-agent': UA, accept, 'accept-language': 'en' }, redirect: 'follow' });
+export async function fetchText(url, { signal, accept = 'text/html,application/xml,application/rss+xml,application/json;q=0.9,*/*;q=0.5', maxBytes = 8 * 1024 ** 2, log = () => {}, ua = UA } = {}) {
+  const res = await fetch(url, { signal, headers: { 'user-agent': ua, accept, 'accept-language': 'en' }, redirect: 'follow' });
   if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
   const type = (res.headers.get('content-type') || '').toLowerCase();
   let buf = Buffer.from(await res.arrayBuffer());
@@ -141,7 +148,8 @@ export function parsePageData(html, pageUrl, { limit = ITEMS_PER_FILE } = {}) {
     if (/^[\[{]/.test(txt)) blobs.push(txt);
     for (const b of txt.matchAll(/=\s*(\{[\s\S]{200,}?\})\s*;?\s*$/gm)) blobs.push(b[1]);
     for (const b of txt.matchAll(/JSON\.parse\((["'])([\s\S]*?)\1\)/g)) { try { blobs.push(JSON.parse(b[1] + b[2] + b[1])); } catch {} }
-    for (const b of blobs) { try { walk(JSON.parse(b), 0); } catch {} if (out.length >= limit) break; }
+    // A state dump written by JavaScript may say undefined where JSON needs null.
+    for (const b of blobs) { try { walk(JSON.parse(typeof b === 'string' ? b.replace(/:undefined\b/g, ':null') : b), 0); } catch {} if (out.length >= limit) break; }
     if (out.length >= limit) break;
   }
   return out;
@@ -189,6 +197,103 @@ export function parseSitemap(xml, sitemapUrl, { limit = ITEMS_PER_FILE } = {}) {
     }
   }
   return { children, items, pages };
+}
+
+/** The site a page belongs to, for keeping its own links: the host without a leading www. */
+const siteOfUrl = (u) => { try { return new URL(u).hostname.toLowerCase().replace(/^www\./, ''); } catch { return ''; } };
+const sameSite = (a, b) => a === b || a.endsWith('.' + b) || b.endsWith('.' + a) || a.split('.').slice(-2).join('.') === b.split('.').slice(-2).join('.');
+const attrOf = (attrs, name) => { const m = attrs.match(new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i')); return m ? decode(m[1] ?? m[2] ?? m[3]) : ''; };
+/** The picture an <img> (or <source>) really shows: lazy-loading sites keep it off src until the tile scrolls in. */
+function imageOfTag(tagHtml) {
+  for (const name of ['data-src', 'data-lazy-src', 'data-original', 'srcset', 'data-srcset', 'src']) {
+    let v = attrOf(tagHtml, name);
+    if (!v) continue;
+    if (/srcset$/i.test(name)) v = v.split(',')[0].trim().split(/\s+/)[0];
+    if (/^data:|^about:|^javascript:|\.svg(\?|$)/i.test(v) || /\b1x1\b|spacer|blank\.|pixel\.|logo/i.test(v)) continue;
+    return v;
+  }
+  return '';
+}
+
+/**
+ * The title cards on a page, in page order: every link to the site's own pages that has a
+ * picture, with the name the page gives it: its aria-label or title, else the alt text of the
+ * picture inside it (the visible text of a card is often a badge such as "New episode"), else
+ * its text.
+ * The picture is the one inside the link; failing that, the page as a whole decides whether
+ * its cards put the picture just after the link or just before it (whichever pictures more
+ * cards), so neighbouring tiles never swap posters. When enough of the cards link to content
+ * pages (movies, shows, videos...), only those are kept, which drops menus and promo tiles.
+ */
+export function parseCards(html, pageUrl, { limit = ITEMS_PER_FILE } = {}) {
+  const site = siteOfUrl(pageUrl);
+  const body = String(html || '').replace(/<(script|style|svg|noscript|template|head)\b[\s\S]*?<\/\1>/gi, ' ');
+  // Every link on the page marks a boundary, so a picture inside one link (a partner's, a
+  // menu's) is never taken for a neighbouring card's; only the site's own pages become cards.
+  const anchors = [];
+  for (const m of body.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+    const attrs = m[1], inner = m[2];
+    const a = { start: m.index, end: m.index + m[0].length, url: '', label: '', image: '' };
+    anchors.push(a);
+    const href = attrOf(attrs, 'href');
+    if (!href || /^(#|javascript:|mailto:|tel:)/i.test(href)) continue;
+    const url = abs(href, pageUrl);
+    if (!url || !/^https?:/i.test(url) || !sameSite(siteOfUrl(url), site)) continue;
+    const pic = inner.match(/<(?:img|source)\b[^>]*>/i)?.[0] || '';
+    const alt = attrOf(inner.match(/<img\b[^>]*>/i)?.[0] || '', 'alt');
+    const text = decode(inner);
+    a.url = url;
+    a.label = [attrOf(attrs, 'aria-label'), attrOf(attrs, 'title'), alt, text].map((s) => s.trim()).find((s) => s.length >= 2 && !ICON_WORDS.test(s)) || '';
+    a.image = pic ? imageOfTag(pic) : '';
+  }
+  // Pictures outside the links: first one after each link (before the next), and last one before it.
+  const gapImage = (from, to, last) => {
+    const gap = body.slice(from, to);
+    const tags = [...gap.matchAll(/<(?:img|source)\b[^>]*>|style=["'][^"']*background(?:-image)?\s*:\s*url\(([^)]+)\)/gi)];
+    for (const t of last ? tags.reverse() : tags) { const u = t[1] ? t[1].replace(/^["']|["']$/g, '') : imageOfTag(t[0]); if (u) return u; }
+    return '';
+  };
+  const after = anchors.map((a, i) => a.image || (a.url ? gapImage(a.end, anchors[i + 1]?.start ?? body.length, false) : ''));
+  const before = anchors.map((a, i) => a.image || (a.url ? gapImage(anchors[i - 1]?.end ?? 0, a.start, true) : ''));
+  const pick = after.filter(Boolean).length >= before.filter(Boolean).length ? after : before;
+  const out = [], seen = new Set();
+  anchors.forEach((a, i) => {
+    const image = pick[i];
+    if (!a.url || !a.label || !image || seen.has(a.url)) return;
+    seen.add(a.url);
+    out.push({ title: a.label, url: a.url, image: abs(image, pageUrl), kind: kindFromUrl(a.url) });
+  });
+  const content = out.filter((c) => { try { return CARD_PATH.test(new URL(c.url).pathname + '/'); } catch { return false; } });
+  return (content.length >= ENOUGH ? content : out).slice(0, limit);
+}
+
+/** What a front page shows, in its order: its cards first, else the data it embeds, else its structured data. */
+export function parseFrontPage(html, pageUrl) {
+  const pictured = (items) => items.filter((i) => i.image);
+  for (const items of [parseCards(html, pageUrl), parsePageData(html, pageUrl), parseJsonLd(html, pageUrl)]) {
+    if (pictured(items).length >= FRONT_ENOUGH) return pictured(items);
+  }
+  return [];
+}
+
+/**
+ * Fetch a source's front page and read its cards. Asks as a browser first; when that is an empty
+ * app shell, asks again as the hub itself, which some sites answer with the rendered page.
+ * Returns {items, html, reader} where reader says the second way was the one that worked.
+ */
+export async function fetchFrontPage(url, { signal, log = () => {}, fetchText: ft = fetchText, reader = false } = {}) {
+  let html = '', items = [], usedReader = false;
+  if (!reader) {
+    try { html = (await ft(url, { signal, log })).text; items = parseFrontPage(html, url); } catch (e) { log('frontpage', 'page failed', url, e.message); }
+  }
+  if (items.length < FRONT_ENOUGH) {
+    try {
+      const r = await ft(url, { signal, log, ua: READER_UA });
+      const got = parseFrontPage(r.text, url);
+      if (got.length > items.length) { items = got; usedReader = true; if (!html) html = r.text; }
+    } catch (e) { log('frontpage', 'page failed as reader', url, e.message); }
+  }
+  return { items, html, reader: usedReader };
 }
 
 /** Open Graph tags of one page: the real title and poster behind a page address. */
@@ -239,9 +344,15 @@ export async function discoverFeed(origin, home = '/', { timeoutMs = 25000, log 
   const base = new URL(origin).origin;
   const homeUrl = abs(home || '/', base) || base;
 
-  // 1. The page itself: structured data, then the data it embeds for its tiles, then feeds it links to.
-  let html = '';
-  try { html = (await get(homeUrl)).text; } catch (e) { log('discover', 'home page failed', e.message); }
+  // 1. The page itself: the cards on its front page, then structured data, then the data it
+  //    embeds for its tiles, then feeds it links to.
+  const front = await fetchFrontPage(homeUrl, { signal: AbortSignal.timeout(Math.min(20000, left())), log, fetchText: ft });
+  if (front.items.length >= FRONT_ENOUGH) {
+    const feed = { type: 'frontpage', url: homeUrl };
+    if (front.reader) feed.reader = true;
+    return { feed, items: front.items, how: 'the rows on its front page', intervalSec: 3600 };
+  }
+  const html = front.html;
   if (html) {
     let items = parseJsonLd(html, homeUrl);
     if (items.length >= ENOUGH) return { feed: { type: 'jsonld', url: homeUrl }, items, how: 'structured data on the page', intervalSec: 3600 };

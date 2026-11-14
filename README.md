@@ -161,6 +161,12 @@ you would for any browsing, and only configure sources you trust.
   `image`, `year`, `kind`, optional `feed.nextRegex` with group `url`). Both use jittered backoff
   on 429/5xx and a per-source minimum interval. The scheduler runs sources concurrently with
   per-source concurrency of one.
+* `discover.js` feeds, the ones the finder sets up from the TV: `frontpage` (the title cards on
+  the site's own front page, hero first then row by row; each title keeps its place on the page as
+  `rank` on its link to that source, and the home screen shows those rows first; `reader: true`
+  marks a site that renders its page only for non-browser readers, so the pull asks as the hub),
+  `jsonld`, `pagedata`, `rss`, `sitemap` and `pages`. A front-page pull is the whole page: a title
+  that drops off it loses its rank and goes back to the plain Movies or Series row.
 * `normalise.js`: NFKC + diacritics folding → bracket tags dropped (trailing year kept) →
   separators → `SxxEyy`/`Season N` extracted → release tokens stripped → `titleKey` without
   articles. Items merge on `(titleKey, year, kind)` or Jaro-Winkler ≥ 0.92 within the same
@@ -183,10 +189,14 @@ you would for any browsing, and only configure sources you trust.
 From the TV: the Settings screen (the card at the end of the Sources row, or the remote's menu
 button) adds a source by name and address, removes one, and allows the hosts a source needs that
 strict mode blocked. On add, the hub looks for something it can pull titles from, in this order:
-JSON-LD lists on the page (`ItemList`, `VideoObject`, `Movie`, `TVSeries`), an RSS or Atom feed
-the page declares or one at a usual path, then the video sitemaps named in `robots.txt`. The first
-with enough titles is stored as the source's `feed` and pulled on the usual schedule
-(`server/ingest/discover.js`). A site with none of those still opens as a page.
+the site's own front page (its title cards, with posters, in the order the site shows them; twelve
+or more and the home screen gets a row of exactly what that site is featuring), JSON-LD lists on
+the page (`ItemList`, `VideoObject`, `Movie`, `TVSeries`), an RSS or Atom feed the page declares or
+one at a usual path, then the video sitemaps named in `robots.txt`. The first with enough titles
+is stored as the source's `feed` and pulled on the usual schedule (`server/ingest/discover.js`).
+A site with none of those still opens as a page. A front page that is an empty app shell for
+browsers is asked for again as the hub itself; a site whose front page is filled in only by
+JavaScript after loading, from an address the hub cannot know, yields no front-page row.
 
 By hand: add an entry to `config/sources.json` with `origin` (the portal), a `feed` block
 describing its JSON endpoint or HTML list page, and `rules`. Save the file: the hub watches
