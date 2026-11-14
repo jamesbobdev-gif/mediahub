@@ -208,4 +208,15 @@ server.listen(PORT, () => {
   setInterval(() => { if (!scheduler.running.size) artwork.sweep(); }, 24 * 3600 * 1000).unref();
 });
 
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { scheduler.stop(); catalog.close(); portalServer.close(); server.close(() => process.exit(0)); });
+// Stopping: a TV app keeps connections open as long as it runs, so idle ones are closed too and
+// the process leaves within two seconds whatever is still attached. Closing twice is harmless.
+let stopping = false;
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => {
+  if (stopping) return;
+  stopping = true;
+  scheduler.stop();
+  try { catalog.close(); } catch {}
+  for (const s of [portalServer, server]) { s.close(); s.closeAllConnections?.(); }
+  setTimeout(() => process.exit(0), 2000).unref();
+  server.once('close', () => process.exit(0));
+});
