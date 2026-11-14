@@ -21,6 +21,7 @@ export class Player {
 
   receive(s) {
     const wasActive = this.state.active;
+    if (s.active !== wasActive) this.onChange?.(s);
     this.state = s;
     if (!s.active) { this.osd.hidden = true; if (wasActive) this.onProgress(this.state.t, this.state.d); return; }
     this.renderOsd(s.show);

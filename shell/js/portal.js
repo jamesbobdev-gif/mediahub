@@ -10,7 +10,7 @@ export class PortalFrame {
     this.ready = false; this.href = null; this.title = ''; this.cands = []; this.source = null;
     this.readyAt = 0; this.loadAt = 0;
     this.onReady = () => {}; this.onBlocked = () => {}; this.onCandidates = () => {}; this.onPlayer = () => {};
-    this.onHidden = () => {}; this.onNoPlayer = () => {}; this.onDecisions = () => {};
+    this.onHidden = () => {}; this.onNoPlayer = () => {}; this.onDecisions = () => {}; this.onTrace = () => {};
     window.addEventListener('message', (e) => this._onMessage(e));
     this.attachLoadListener();
   }
@@ -72,6 +72,7 @@ export class PortalFrame {
       case 'hub:hidden': this.onHidden(m.selector); break;
       case 'hub:noplayer': this.onNoPlayer(); break;
       case 'hub:decisions': this.onDecisions(m); break;
+      case 'hub:trace': this.onTrace(m); break;
     }
   }
 

@@ -247,8 +247,10 @@ function openPortal(path, { key = null, title = null, itemId = null, autoplay = 
   say(state.viaHome ? `Opening ${title || 'it'} through ${src.name}...` : 'Loading portal…');
 }
 function wirePortal() {
+  portal.onTrace = (m) => trace('frame:' + (m.step || '?'), m.data || {});
   portal.onReady = (m) => {
     if (state.view !== 'portal') return;
+    trace('ready', { href: m.href, viaHome: state.viaHome, autoplay: state.autoplay, depth: state.portalDepth });
     say('');
     state.blockedRedirects = 0;
     if (state.goodUrls[state.goodUrls.length - 1] !== m.href) state.goodUrls.push(m.href);
@@ -269,6 +271,7 @@ function wirePortal() {
   portal.onCandidates = () => { if (state.viaHome === 'armed') scheduleGo(); if (state.view === 'portal' && !player.active) refreshFocus(); };
   portal.onBlocked = () => {
     if (state.view !== 'portal') return;
+    trace('blocked', { href: portal.href, src: portal.frame.src, missed: portal.missed, viaHome: state.viaHome, count: state.blockedRedirects });
     // Some sites throw out a title page opened directly (Tubi sends it to its 404 screen) but build
     // the same page fine when reached from their own front page. Go in that way once.
     if (state.autoplayPath && !state.viaHome) {
@@ -297,9 +300,10 @@ function wirePortal() {
       say(r.ok ? `Hidden and saved: ${selector}` : `Hidden (save failed: HTTP ${r.status})`);
     } catch (e) { say(`Hidden (save failed: ${e.message})`); }
   };
-  portal.onNoPlayer = () => { say('No player found on this page. Pick it with the remote.'); refreshFocus(); };
+  portal.onNoPlayer = () => { trace('noplayer', { href: portal.href }); say('No player found on this page. Pick it with the remote.'); refreshFocus(); };
   portal.onDecisions = (d) => { state.decisions = d; if (!hud.hidden) renderHud(); };
   player.onEnd = () => stopPlayback();
+  player.onChange = (s) => trace(s.active ? 'player-on' : 'player-off', { t: Math.round(s.t || 0), d: Math.round(s.d || 0) });
   player.onProgress = (t, d) => {
     const key = playbackKey(); if (!key) return;
     progress.save(key, { t, d, title: state.playTitle || portal.title, portalUrl: portal.href, itemId: state.playItemId });
@@ -312,7 +316,7 @@ function portalSelect() {
   portal.send({ type: 'hub:activate', id: c.id });
 }
 /** Ask the page to start the chosen title: press its play control and hand the video over. */
-function startChosenTitle() { if (state.view === 'portal' && !player.active) portal.send({ type: 'hub:autoplay', resumeAt: resumeFor() }); }
+function startChosenTitle() { if (state.view !== 'portal' || player.active) return; trace('autoplay-sent', { href: portal.href }); portal.send({ type: 'hub:autoplay', resumeAt: resumeFor() }); }
 let goTimer = null, goDeadline = 0;
 function armGo() { goDeadline = performance.now() + 8000; scheduleGo(); }
 function scheduleGo() {
@@ -322,6 +326,7 @@ function scheduleGo() {
 function sendGo() {
   if (state.viaHome !== 'armed' || state.view !== 'portal') return;
   state.viaHome = 'went';
+  trace('go-sent', { path: state.autoplayPath, title: state.playTitle });
   portal.send({ type: 'hub:go', path: state.autoplayPath, then: 'autoplay', title: state.playTitle, resumeAt: resumeFor() });
 }
 function playbackKey() {
@@ -360,6 +365,10 @@ function setMode(mode) {
   state.mode = mode;
   if (mode === 'cursor') { cursor.show(); ring.hidden = true; say('Cursor mode'); }
   else { cursor.hide(); refreshFocus(); say('Navigation mode'); }
+}
+/** A step of a visit, kept by the hub (/api/trace) so a page that will not play can be looked into from a PC. */
+function trace(event, data = {}) {
+  try { fetch('/api/trace', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ event, view: state.view, source: state.portalSource, ...data }) }).catch(() => {}); } catch {}
 }
 function say(msg) { toast.textContent = msg; toast.hidden = !msg; clearTimeout(say.t); if (msg) say.t = setTimeout(() => { toast.hidden = true; }, 2500); }
 

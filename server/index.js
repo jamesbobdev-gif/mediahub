@@ -35,6 +35,7 @@ const access = loadAccess(ACCESS_FILE);
 // HUB_CACHE_MB: memory for the proxy's copy of scripts, styles, images and fonts; 0 turns it off.
 const CACHE_MB = process.env.HUB_CACHE_MB === undefined || process.env.HUB_CACHE_MB === '' ? DEFAULT_CACHE_MB : Number(process.env.HUB_CACHE_MB);
 const proxy = createProxy({ sources, filters, log, cacheMb: CACHE_MB });
+const trace = [];
 const catalog = new Catalog(path.join(DATA, 'catalog.sqlite'));
 const artwork = new ArtworkStore({ dir: path.join(DATA, 'artwork'), budgetBytes: Number(process.env.HUB_ART_BUDGET || 2 * 1024 ** 3), log });
 await artwork.init();
@@ -165,6 +166,16 @@ async function route(req, res) {
     const results = await Promise.all(ids.map((s) => scheduler.run(s)));
     return json(res, 200, { results, count: catalog.count() });
   }
+  // What the TV decided, for looking into a page that would not play from a PC: the shell posts
+  // its steps here and the last few hundred can be read back. Memory only.
+  if (p === '/api/trace' && req.method === 'POST') {
+    const body = await readJsonBody(req, 8 * 1024);
+    trace.push({ t: new Date().toISOString().slice(11, 23), from: (req.socket.remoteAddress || '').replace('::ffff:', ''), ...body });
+    if (trace.length > 300) trace.splice(0, trace.length - 300);
+    res.writeHead(204).end();
+    return;
+  }
+  if (p === '/api/trace') return json(res, 200, trace.slice(-Number(url.searchParams.get('n') || 100)));
   if (p === '/api/status') {
     return json(res, 200, {
       items: catalog.count(), head: catalog.seq,

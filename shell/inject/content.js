@@ -172,21 +172,28 @@
     }
     return hinted;
   }
+  const tell = (step, data) => send({ type: 'hub:trace', step, data });
   function autoplay(m) {
     const deadline = Date.now() + 20000;
     let pressed = null;
+    tell('autoplay-start', { path: location.pathname, title: document.title.slice(0, 60), videos: queryAll('video').length });
     const ready = (v) => !!(v && (v.readyState > 0 || v.currentSrc || v.getAttribute('src') || v.querySelector('source')));
     const largest = () => queryAll(RULES.player).concat(queryAll('video')).filter((v) => { const r = v.getBoundingClientRect(); return r.width > 0 && r.height > 0; }).sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect(); return rb.width * rb.height - ra.width * ra.height; })[0];
     const step = () => {
       const btn = pressed ? null : findPlayControl();
-      if (btn) { pressed = Date.now(); decisions.push({ kind: 'autoplay', tag: btn.tagName, cls: labelOf(btn) }); activate(btn); return false; }
+      if (btn) { pressed = Date.now(); decisions.push({ kind: 'autoplay', tag: btn.tagName, cls: labelOf(btn) }); tell('pressed', { tag: btn.tagName, label: labelOf(btn), href: btn.getAttribute('href') || '' }); activate(btn); return false; }
       const v = largest();
-      if (ready(v) && (pressed || !findPlayControl())) { player.attach(v, m); return true; }
+      if (ready(v) && (pressed || !findPlayControl())) { tell('attach', { readyState: v.readyState, src: String(v.currentSrc || v.getAttribute('src') || '').slice(0, 80) }); player.attach(v, m); return true; }
       return false;
     };
     const timer = setInterval(() => {
       if (step()) return clearInterval(timer);
-      if (Date.now() > deadline) { clearInterval(timer); send({ type: 'hub:noplayer' }); }
+      if (Date.now() > deadline) {
+        clearInterval(timer);
+        const v = largest();
+        tell('autoplay-gave-up', { pressed: !!pressed, videos: queryAll('video').length, path: location.pathname, title: document.title.slice(0, 60), video: v ? { readyState: v.readyState, src: String(v.currentSrc || v.getAttribute('src') || '').slice(0, 80), w: Math.round(v.getBoundingClientRect().width) } : null });
+        send({ type: 'hub:noplayer' });
+      }
     }, 700);
     step();
   }
@@ -604,9 +611,10 @@
           // The chosen title's name in the page title says the app has drawn that page, not the one before.
           const drawn = () => location.pathname === target && (want ? norm(document.title).includes(want) : document.title !== was);
           let tries = 0;
+          tell('go', { real, want, title: was.slice(0, 60) });
           const wait = setInterval(() => {
-            if (drawn()) { clearInterval(wait); setTimeout(() => autoplay(m), 1200); return; }
-            if (Date.now() - t0 > 15000) { clearInterval(wait); send({ type: 'hub:noplayer' }); return; }
+            if (drawn()) { clearInterval(wait); tell('drawn', { path: location.pathname, title: document.title.slice(0, 60), ms: Date.now() - t0 }); setTimeout(() => autoplay(m), 1200); return; }
+            if (Date.now() - t0 > 15000) { clearInterval(wait); tell('not-drawn', { path: location.pathname, title: document.title.slice(0, 60) }); send({ type: 'hub:noplayer' }); return; }
             if (++tries % 4 === 0) { try { history.replaceState({}, '', real); dispatchEvent(new PopStateEvent('popstate', { state: {} })); } catch {} }
           }, 400);
         }
