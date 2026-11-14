@@ -15,9 +15,9 @@ the artwork store were checked for leftovers.
 | --- | --- | --- | --- | --- |
 | Crackle (crackle.com) | yes | nothing found | no: the Pi cannot reach crackle.com at all (connection fails before any page), so the hub answered a bare error | yes |
 | Xumo Play (play.xumo.com) | yes | nothing found (the site is drawn entirely by script, no feed, no sitemap) | yes, as a page | yes |
-| PBS Kids (pbskids.org/videos) | yes | the rows on its front page, 50 titles with pictures | yes | yes, 42 titles gone |
-| NASA+ (plus.nasa.gov) | yes | nothing at first; now its WordPress list of videos, 50 titles with pictures | yes | yes |
-| Internet Archive, classic_tv collection | yes | nothing at first; now the archive's own list of the collection, 200 titles with pictures | yes | yes |
+| PBS Kids (pbskids.org/videos) | yes | the rows on its front page, 50 titles with pictures | yes | yes: 42 titles and 31 posters gone |
+| NASA+ (plus.nasa.gov) | yes | nothing at first; now its WordPress list of videos, 50 titles with pictures (46 new to the catalog) | yes | yes: 46 titles and 44 posters gone |
+| Internet Archive, classic_tv collection | yes | nothing at first; now the archive's own list of the collection, 200 titles with pictures (192 new, one shared with the films collection) | yes | yes: 191 titles and 89 posters gone, the shared title kept |
 
 ## Flaws found, and what was done
 
@@ -37,6 +37,7 @@ the artwork store were checked for leftovers.
 | Movies and Series rows showed one source's titles in a block before the next source's | shell | Rows take titles in turns across sources |
 | Nothing on the home screen showed what the viewer actually opened lately | shell | A Recently watched row across all sources, after Continue watching |
 | Xumo Play, The Roku Channel and Plex give the finder nothing: they are drawn entirely by script with no feed, sitemap or public list | finder | Open question. They open as pages; no titles reach the home screen |
+| Posters still downloading when a source is removed land in the store afterwards and are never deleted (about 240 files after two passes) | artwork store | Open: a sweep of posters no title uses, at start-up |
 | Pluto TV shows "You may be using a VPN or proxy" from a PC on a VPN, with or without the hub | site | Not a hub fault; from the Pi it loads |
 | The play-at-once press did not start Coraline on the Fire TV, while the same flow plays on a PC | shell, injected script | Open: the TV now reports each step to `/api/trace`; the stick was asleep before it could be read |
 | The Fire TV's Info button opens a system "pair your remote" dialog instead of the hub's stats | Fire TV | Open: the hub's stats need another key on that remote |
