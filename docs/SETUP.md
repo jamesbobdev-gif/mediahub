@@ -175,6 +175,49 @@ keyboard), and the element under focus is hidden and saved as a rule.
 
 Only add sources you are entitled to access and scrape.
 
+## Step 6. Stop the stick reporting home (optional)
+
+A Fire TV Stick reports what you watch and do to Amazon, and fills its home screen with sponsored
+rows. Two changes cut most of that off. Neither touches the hub: the stick reaches it by address
+on your own network, and the Pi does all the fetching.
+
+**On the stick, with the remote.** Settings, Preferences, Privacy Settings: turn off Device Usage
+Data, Collect App and Over-the-Air Usage Data, and Interest-based Ads. Then Preferences, Featured
+Content: turn off both autoplay switches. This reduces what is reported but does not stop it.
+
+**On the Pi: Pi-hole.** Pi-hole is a DNS server. The stick asks it for the address of every name
+it wants to reach. Names on the blocklist (ad servers, Amazon's reporting hosts) get no answer, so
+the stick gives up as if the server did not exist. Nothing is installed on the stick. Install it
+on the same Pi as the hub:
+
+```bash
+curl -sSL https://install.pi-hole.net | bash
+```
+
+Take the defaults: the wired interface, an upstream such as Cloudflare, the standard blocklist,
+logging on. The installer prints a password for its page at the end. Change it with
+`sudo pihole setpassword`. The page is at `http://<pi-address>/admin`.
+
+On that page add the two smart-TV lists (kept by Perflyst on GitHub) under Lists, then run Tools,
+Update Gravity:
+
+```
+https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/AmazonFireTV.txt
+https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/SmartTV.txt
+```
+
+**Point the stick at it.** The DNS change is made on the stick alone, so nothing else in the house
+changes. On the stick: Settings, Network, select your Wi-Fi, press the menu button and choose
+Forget. Join it again, type the Wi-Fi password, and pick Advanced before connecting. Keep the
+stick's current address, the router's address as the gateway, and the Pi's address as DNS 1.
+Leave DNS 2 blank if it lets you; if it insists, give it the Pi's address again. Any other DNS
+there is a way around the block.
+
+**Check it.** The Pi-hole page's Query Log shows the stick's lookups and which were refused. If an
+app on the stick stops working, find the refused name there and allow it; nothing is permanent.
+When the Pi is off the stick has no internet until it is back, which is also when the hub is off.
+A few apps carry their own fixed DNS and slip past this, which is why the switches above matter too.
+
 ## Updating
 
 When the repository changes:
