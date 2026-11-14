@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createProxy, isPrivateHost, scopeSetCookie, unscopeCookieHeader, noteBlockedHost, blockedHostsFor } from '../server/proxy.js';
+import { createProxy, isPrivateHost, scopeSetCookie, unscopeCookieHeader, noteBlockedHost, blockedHostsFor, sourceFromHeaders } from '../server/proxy.js';
 import { compileFilters } from '../server/filters.js';
 
 const sources = new Map([['demo', { id: 'demo', originUrl: new URL('https://portal.test/app/'), rules: { css: ['.hero'], removeOnMount: [], preserve: ['.grid'], scrollRoot: '.grid', player: 'video', touch: false } }]]);
@@ -83,4 +83,24 @@ test('the proxy forgets blocks an allow pattern now covers', () => {
   noteBlockedHost(p.stats.blockedHosts, 'demo', 'b.other.test', { block: true, reason: 'third-party-script:b.other.test', destination: 'script' });
   p.forgetBlocked('demo', /(^|\.)cdn\.test$/i);
   assert.deepEqual(p.blockedHosts('demo').map((e) => e.host), ['b.other.test']);
+});
+
+test('a request without the hub prefix is mapped to the source named by the hub cookie or the referer', () => {
+  assert.equal(sourceFromHeaders({ cookie: 's_demo__sid=1; hub_source=demo' }, sources)?.id, 'demo');
+  assert.equal(sourceFromHeaders({ referer: 'http://192.168.1.200:8788/p/demo/list?x=1' }, sources)?.id, 'demo');
+  assert.equal(sourceFromHeaders({ cookie: 'hub_source=nope', referer: 'http://192.168.1.200:8788/p/demo/' }, sources)?.id, 'demo');
+  assert.equal(sourceFromHeaders({ cookie: 'hub_source=nope' }, sources), null);
+  assert.equal(sourceFromHeaders({}, sources), null);
+  assert.equal(unscopeCookieHeader('hub_source=demo; s_demo__sid=abc', { id: 'demo' }), 'sid=abc', 'the hub cookie never goes upstream');
+});
+
+test('a page on an https portal asking for plain http gets https, and bare paths follow the hub cookie', () => {
+  const enc = encodeURIComponent;
+  assert.equal(proxy.resolve({ url: '/x/demo/' + enc('http://cdn.test/a.js'), headers: {} }).upstream.href, 'https://cdn.test/a.js');
+  assert.equal(proxy.resolve({ url: '/x/demo/' + enc('https://cdn.test/b.js'), headers: {} }).upstream.href, 'https://cdn.test/b.js');
+  assert.equal(proxy.resolve({ url: '/p/demo/list?x=1', headers: {} }).upstream.href, 'https://portal.test/app/list?x=1');
+  const bare = proxy.resolve({ url: '/oz/auth?x=1', headers: { cookie: 'hub_source=demo' } });
+  assert.equal(bare.upstream.href, 'https://portal.test/app/oz/auth?x=1');
+  assert.equal(bare.firstParty, true);
+  assert.equal(proxy.resolve({ url: '/oz/auth', headers: {} }), null);
 });

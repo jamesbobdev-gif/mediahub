@@ -10,6 +10,16 @@
   const RULES = Object.assign({ css: [], removeOnMount: [], preserve: [], scrollRoot: null, player: 'video', touch: false }, window.__HUB_RULES || {});
   const SHELL = window.__HUB_SHELL || '';
   const SOURCE = RULES.sourceId, PORTAL_ORIGIN = window.__HUB_ORIGIN || '';
+  // The hub serves this page under /p/<source>/..., but the site's own router reads location.pathname
+  // and takes the prefix for an unknown page (Tubi then sends itself to its 404 screen on its real
+  // host, which the frame refuses: a white screen). So the prefix is dropped from the address before
+  // the site's scripts run. Every URL this script routes still carries it, and the shell is told the
+  // prefixed path; a request the page makes without it is mapped back by the hub from a cookie.
+  const PREFIX = `/p/${SOURCE}`;
+  try {
+    if (location.pathname === PREFIX || location.pathname.startsWith(PREFIX + '/')) history.replaceState(history.state, '', (location.pathname.slice(PREFIX.length) || '/') + location.search + location.hash);
+  } catch {}
+  const hubHref = () => `${PREFIX}${location.pathname}${location.search}`;
   const PRESERVE = RULES.preserve.join(',') || null;
   const REMOVE = RULES.removeOnMount.join(',') || null;
   const AD_RATIOS = [[300, 250], [728, 90], [320, 50], [160, 600], [970, 250], [300, 600], [336, 280]];
@@ -29,12 +39,20 @@
   // ---- 2. Every URL a script makes goes through the hub -------------------------
   const sameOrigin = (href) => { try { return new URL(href, location.href).origin === location.origin; } catch { return false; } };
   const HUB_PATHS = /^\/(p|x)\/|^\/shell\/inject\//;
+  /** Where this page really is: its own path on the portal's origin, not on the hub's. */
+  const realBase = () => { try { return new URL(location.pathname + location.search, PORTAL_ORIGIN || location.origin).href; } catch { return location.href; } };
   function toHub(url) {
+    const s = String(url);
     let u;
-    try { u = new URL(url, location.href); } catch { return url; }
+    try { u = new URL(s, location.href); } catch { return url; }
     if (!/^https?:$/.test(u.protocol)) return url;
-    // Root-relative URLs ("/api/list") are relative to the portal, not to the hub: map them under /p/<source>/.
-    if (u.origin === location.origin) return HUB_PATHS.test(u.pathname) ? url : `/p/${SOURCE}${u.pathname}${u.search}${u.hash}`;
+    if (u.origin === location.origin && HUB_PATHS.test(u.pathname)) return url;        // already a hub URL
+    // The page's own relative URL ("/api/list") and a protocol-relative one ("//cdn/x.js") mean the
+    // portal's origin and scheme, not the hub's: resolve them against where the page really is.
+    try {
+      if (s.startsWith('//')) u = new URL(s, realBase());
+      else if (u.origin === location.origin) u = new URL(u.pathname + u.search + u.hash, realBase());
+    } catch { return url; }
     if (PORTAL_ORIGIN && u.origin === PORTAL_ORIGIN) return `/p/${SOURCE}${u.pathname}${u.search}${u.hash}`;
     return `/x/${SOURCE}/${encodeURIComponent(u.href)}`;
   }
@@ -76,7 +94,11 @@
       e.preventDefault(); e.stopImmediatePropagation(); decisions.push({ kind: 'blocked-link', url: a.href });
     } else if (a.href.startsWith(location.origin + '/x/')) {
       e.preventDefault(); e.stopImmediatePropagation(); decisions.push({ kind: 'blocked-link', url: a.href });
-    } else if (a.target === '_blank') a.target = '_self';
+    } else {
+      const routed = toHub(a.href);
+      if (routed !== a.href && routed.startsWith(PREFIX)) a.setAttribute('href', routed);
+      if (a.target === '_blank') a.target = '_self';
+    }
   }, true);
 
   // ---- 3b. Clickable tracking for focus candidates ------------------------------
@@ -247,7 +269,7 @@
     return out;
   }
   let dirty = true, pushScheduled = false;
-  function pushCandidates() { send({ type: 'hub:candidates', list: snapshot(), href: location.pathname + location.search }); dirty = false; }
+  function pushCandidates() { send({ type: 'hub:candidates', list: snapshot(), href: hubHref() }); dirty = false; }
   function markDirty() {
     dirty = true;
     if (pushScheduled) return;
@@ -407,7 +429,7 @@
     schedule(document.body ? document.body.querySelectorAll('*') : []);
     addEventListener('resize', markDirty, { passive: true });
     addEventListener('scroll', markDirty, { passive: true, capture: true });
-    send({ type: 'hub:ready', source: SOURCE, href: location.pathname + location.search, title: document.title });
+    send({ type: 'hub:ready', source: SOURCE, href: hubHref(), title: document.title });
     pushCandidates();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();

@@ -74,9 +74,9 @@ const hostnameOf = (req) => { const h = req.headers.host || '127.0.0.1'; return 
 async function routePortal(req, res) {
   const p = new URL(req.url, 'http://hub').pathname;
   req.hubShellOrigin = `http://${hostnameOf(req)}:${PORT}`;
-  if (p.startsWith('/p/') || p.startsWith('/x/')) return proxy.handle(req, res);
   if (p.startsWith('/shell/inject/')) { if (await serveStatic(path.join(ROOT, 'shell', 'inject'), p.slice('/shell/inject/'.length), req, res)) return; }
-  res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
+  // /p/ and /x/ paths, and a page's own paths without the prefix (the proxy maps those from its cookie).
+  return proxy.handle(req, res);
 }
 
 async function route(req, res) {

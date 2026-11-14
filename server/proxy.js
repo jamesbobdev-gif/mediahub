@@ -9,6 +9,8 @@ import { classify, destinationFor, placeholderFor } from './filters.js';
 import { createCache, cachePolicy, DEFAULT_MB } from './cache.js';
 
 const HOP_BY_HOP = ['connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer'];
+// Request headers that name the TV or the hub rather than the page's request: not sent upstream.
+const DROP_REQUEST = new Set([...HOP_BY_HOP, 'host', 'cookie', 'accept-encoding', 'content-length', 'origin', 'referer', 'user-agent', 'expect']);
 const STRIP_RESPONSE = new Set([
   ...HOP_BY_HOP, 'content-security-policy', 'content-security-policy-report-only',
   'x-frame-options', 'cross-origin-opener-policy', 'cross-origin-embedder-policy',
@@ -64,6 +66,20 @@ export function blockedHostsFor(map, sourceId) {
   const m = map.get(sourceId);
   if (!m) return [];
   return [...m.values()].map((e) => ({ host: e.host, count: e.count, kinds: [...e.kinds], last: e.last })).sort((a, b) => b.count - a.count || a.host.localeCompare(b.host));
+}
+
+const SOURCE_COOKIE = 'hub_source';
+
+/** The source behind a portal-port request that carries no /p/ or /x/ prefix: the hub's own cookie
+ *  set with the last page, else the page in the Referer. Null when neither names a known source. */
+export function sourceFromHeaders(headers, sources) {
+  const fromCookie = String(headers.cookie || '').match(new RegExp(`(?:^|;\\s*)${SOURCE_COOKIE}=([^;]+)`))?.[1];
+  const fromReferer = String(headers.referer || '').match(/\/p\/([^/?#]+)/)?.[1];
+  for (const id of [fromCookie, fromReferer]) {
+    if (!id) continue;
+    try { const s = sources.get(decodeURIComponent(id)); if (s) return s; } catch {}
+  }
+  return null;
 }
 
 export function createProxy({ sources, filters, log = () => {}, cacheMb = DEFAULT_MB }) {
@@ -167,6 +183,13 @@ export function createProxy({ sources, filters, log = () => {}, cacheMb = DEFAUL
   /** Resolve a hub request path to {source, upstream, firstParty} or null. */
   function resolve(req) {
     const url = new URL(req.url, 'http://hub');
+    const bare = url.pathname.startsWith('/p/') || url.pathname.startsWith('/x/') ? null : sourceFromHeaders(req.headers, sources);
+    if (bare) {
+      // The page's own path, without the hub prefix (its script navigated, or a worker asked):
+      // the source is the one whose page was served last, from the hub's own cookie.
+      const base = bare.originUrl.pathname.replace(/\/$/, '');
+      return { source: bare, upstream: new URL(`${bare.originUrl.origin}${base}${url.pathname}${url.search}`), firstParty: true };
+    }
     let m = url.pathname.match(/^\/p\/([^/]+)(\/.*)?$/);
     if (m) {
       const source = sources.get(m[1]);
@@ -182,6 +205,9 @@ export function createProxy({ sources, filters, log = () => {}, cacheMb = DEFAUL
       let upstream;
       try { upstream = new URL(decodeURIComponent(m[2]) + url.search); } catch { return null; }
       if (!/^https?:$/.test(upstream.protocol)) return null;
+      // A page on an https portal asking for plain http (a protocol-relative URL resolved against the
+      // hub's address) would be mixed content on the real site; its CDN serves https anyway.
+      if (upstream.protocol === 'http:' && source.originUrl.protocol === 'https:') upstream.protocol = 'https:';
       // Third-party fetches may not reach the home network (unless the source itself lives there).
       if (isPrivateHost(upstream.hostname) && upstream.hostname !== source.originUrl.hostname) return { forbidden: `private host ${upstream.hostname}` };
       return { source, upstream, firstParty: upstream.origin === source.originUrl.origin };
@@ -200,7 +226,8 @@ export function createProxy({ sources, filters, log = () => {}, cacheMb = DEFAUL
     if (verdict.block) {
       const ph = placeholderFor(destination);
       log('blocked', destination, verdict.reason, upstream.href);
-      res.writeHead(ph.status, { 'content-type': ph.type, 'cache-control': 'public, max-age=3600', 'x-hub-blocked': verdict.reason });
+      // Never cacheable: once the host is allowed from Settings, the next load must reach the hub.
+      res.writeHead(ph.status, { 'content-type': ph.type, 'cache-control': 'no-store', 'x-hub-blocked': verdict.reason });
       res.end(ph.body);
       return;
     }
@@ -222,15 +249,19 @@ export function createProxy({ sources, filters, log = () => {}, cacheMb = DEFAUL
     }
     const cacheTag = cache.enabled ? 'miss' : 'off';
 
-    const headers = {
-      'user-agent': UA,
-      'accept': req.headers['accept'] || '*/*',
-      'accept-language': req.headers['accept-language'] || 'en',
-      'referer': `${source.originUrl.origin}${source.originUrl.pathname}`,
-    };
-    for (const h of ['range', 'content-type', 'if-none-match', 'if-modified-since']) {
-      if (req.headers[h]) headers[h] = req.headers[h];
+    // The page's own request headers go upstream: an app's API calls carry their tokens and
+    // content types in them. What names the TV or the hub is replaced: the agent and referer are
+    // the portal's, cookies are scoped below, and encoding, length and fetch metadata are the hub's.
+    const headers = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (DROP_REQUEST.has(k) || k.startsWith('sec-') || k.startsWith('x-hub-') || k.startsWith(':')) continue;
+      headers[k] = v;
     }
+    headers['user-agent'] = UA;
+    headers['accept'] = req.headers['accept'] || '*/*';
+    headers['accept-language'] = req.headers['accept-language'] || 'en';
+    headers['referer'] = `${source.originUrl.origin}${source.originUrl.pathname}`;
+    if (req.headers['origin']) headers['origin'] = source.originUrl.origin;
     // Cookies: only this source's own cookies, and only to the portal itself, never to third parties.
     if (firstParty && req.headers['cookie']) {
       const scoped = unscopeCookieHeader(req.headers['cookie'], source);
@@ -262,6 +293,8 @@ export function createProxy({ sources, filters, log = () => {}, cacheMb = DEFAUL
 
     const ctype = (up.headers.get('content-type') || '').toLowerCase();
     const isHtml = ctype.includes('text/html');
+    // A page remembers its source for requests it makes without the hub prefix (never sent upstream).
+    if (isHtml && firstParty) out['set-cookie'] = [...(out['set-cookie'] || []), `${SOURCE_COOKIE}=${encodeURIComponent(source.id)}; Path=/; SameSite=Lax`];
     const isCss = ctype.includes('text/css');
     const hls = !isHtml && isHls(ctype, upstream.href), dash = !isHtml && isDash(ctype, upstream.href);
     const declared = Number(up.headers.get('content-length'));
@@ -318,5 +351,5 @@ export function createProxy({ sources, filters, log = () => {}, cacheMb = DEFAUL
   /** Forget recorded blocks a new allow pattern now covers, so the Settings screen stops offering them. */
   const forgetBlocked = (sourceId, re) => { const m = stats.blockedHosts.get(sourceId); if (m) for (const h of [...m.keys()]) if (re.test(h)) m.delete(h); };
 
-  return { handle, stats, cache, hubUrlFor, rewriteHtml, rewriteM3u8, rewriteMpd, blockedHosts, forgetBlocked };
+  return { handle, stats, cache, hubUrlFor, resolve, rewriteHtml, rewriteM3u8, rewriteMpd, blockedHosts, forgetBlocked };
 }
