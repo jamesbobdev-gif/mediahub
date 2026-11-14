@@ -11,6 +11,7 @@ import { loadFilters, compileFilters } from './filters.js';
 import { loadAccess, clientAllowed } from './access.js';
 import { readFileSync } from 'node:fs';
 import { createProxy } from './proxy.js';
+import { DEFAULT_MB as DEFAULT_CACHE_MB } from './cache.js';
 import { serveStatic } from './static.js';
 import { Catalog } from './ingest/catalog.js';
 import { Scheduler } from './ingest/scheduler.js';
@@ -31,7 +32,9 @@ const ACCESS_FILE = path.join(CONFIG, 'access.json');
 const sources = loadSources(SOURCES_FILE);
 const filters = loadFilters(FILTERS_FILE);
 const access = loadAccess(ACCESS_FILE);
-const proxy = createProxy({ sources, filters, log });
+// HUB_CACHE_MB: memory for the proxy's copy of scripts, styles, images and fonts; 0 turns it off.
+const CACHE_MB = process.env.HUB_CACHE_MB === undefined || process.env.HUB_CACHE_MB === '' ? DEFAULT_CACHE_MB : Number(process.env.HUB_CACHE_MB);
+const proxy = createProxy({ sources, filters, log, cacheMb: CACHE_MB });
 const catalog = new Catalog(path.join(DATA, 'catalog.sqlite'));
 const artwork = new ArtworkStore({ dir: path.join(DATA, 'artwork'), budgetBytes: Number(process.env.HUB_ART_BUDGET || 2 * 1024 ** 3), log });
 await artwork.init();
@@ -167,6 +170,7 @@ async function route(req, res) {
       items: catalog.count(), head: catalog.seq,
       ingest: Object.fromEntries(scheduler.status),
       proxy: { requests: proxy.stats.requests, blocked: proxy.stats.blocked, byReason: Object.fromEntries(proxy.stats.byReason) },
+      cache: { ...proxy.cache.stats },
       blockedHosts: Object.fromEntries([...sources.keys()].map((id) => [id, proxy.blockedHosts(id)]).filter(([, list]) => list.length)),
     });
   }

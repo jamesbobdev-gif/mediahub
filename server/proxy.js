@@ -6,6 +6,7 @@
 
 import { Readable } from 'node:stream';
 import { classify, destinationFor, placeholderFor } from './filters.js';
+import { createCache, cachePolicy, DEFAULT_MB } from './cache.js';
 
 const HOP_BY_HOP = ['connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer'];
 const STRIP_RESPONSE = new Set([
@@ -65,10 +66,15 @@ export function blockedHostsFor(map, sourceId) {
   return [...m.values()].map((e) => ({ host: e.host, count: e.count, kinds: [...e.kinds], last: e.last })).sort((a, b) => b.count - a.count || a.host.localeCompare(b.host));
 }
 
-export function createProxy({ sources, filters, log = () => {} }) {
+export function createProxy({ sources, filters, log = () => {}, cacheMb = DEFAULT_MB }) {
   // blockedHosts: sourceId -> Map(host -> {host, count, kinds, last}) for the third-party blocks a
   // source's pages ran into, which is what the Settings screen offers to allow.
   const stats = { requests: 0, blocked: 0, byReason: new Map(), blockedHosts: new Map() };
+  // Scripts, styles, images and fonts the TV asked for before are answered from memory, so a
+  // portal's second open does not fetch its hundreds of files from the internet again.
+  // Rewritten CSS is kept per source (its URLs are rewritten with the source id); everything
+  // else is keyed by the upstream URL alone, since the bytes are the same whoever asked.
+  const cache = createCache({ maxBytes: Math.max(0, Number(cacheMb) || 0) * 1024 * 1024 });
 
   /** Map an absolute upstream URL to a hub-origin path. */
   function hubUrlFor(absolute, source) {
@@ -199,6 +205,23 @@ export function createProxy({ sources, filters, log = () => {} }) {
       return;
     }
 
+    // A cached copy answers without touching the internet. Only plain GETs look: a Range request
+    // wants part of a file, and HEAD/POST are never kept.
+    const looks = cache.enabled && req.method === 'GET' && !req.headers['range'];
+    const hit = looks ? cache.get(upstream.href, source.id) : null;
+    if (hit) {
+      const now = Date.now();
+      res.writeHead(hit.status, {
+        ...hit.headers, 'x-hub-source': source.id, 'x-hub-cache': 'hit',
+        'cache-control': `public, max-age=${Math.max(1, Math.ceil((hit.expires - now) / 1000))}`,
+        'age': String(Math.max(0, Math.floor((now - hit.stored) / 1000))),
+        'content-length': String(hit.body.length),
+      });
+      res.end(hit.body);
+      return;
+    }
+    const cacheTag = cache.enabled ? 'miss' : 'off';
+
     const headers = {
       'user-agent': UA,
       'accept': req.headers['accept'] || '*/*',
@@ -235,11 +258,26 @@ export function createProxy({ sources, filters, log = () => {} }) {
     const cookies = firstParty ? (up.headers.getSetCookie?.() || []) : [];   // third parties set no cookies on the TV
     if (cookies.length) out['set-cookie'] = cookies.map((c) => scopeSetCookie(c, source));
     out['x-hub-source'] = source.id;
+    out['x-hub-cache'] = cacheTag;
 
     const ctype = (up.headers.get('content-type') || '').toLowerCase();
     const isHtml = ctype.includes('text/html');
     const isCss = ctype.includes('text/css');
     const hls = !isHtml && isHls(ctype, upstream.href), dash = !isHtml && isDash(ctype, upstream.href);
+    const declared = Number(up.headers.get('content-length'));
+    const policy = looks && !isHtml && !hls && !dash
+      ? cachePolicy({ method: req.method, reqHeaders: req.headers, status: up.status, resHeaders: up.headers, url: upstream.href, ctype, size: declared > 0 ? declared : undefined })
+      : { ok: false, reason: 'kind' };
+    // The TV's own browser may keep the file for the same lifetime; pages themselves never.
+    if (policy.ok) out['cache-control'] = `public, max-age=${Math.ceil(policy.ttl / 1000)}`;
+    /** Keep a finished body under the upstream URL (CSS under the source too, as its URLs are rewritten per source). */
+    const keep = (body, perSource) => {
+      if (!policy.ok) return;
+      const headers = { ...out };
+      delete headers['x-hub-source']; delete headers['x-hub-cache']; delete headers['set-cookie']; delete headers['cache-control'];
+      cache.set(upstream.href, { status: up.status, headers, body, ttl: policy.ttl, sourceId: perSource ? source.id : undefined });
+    };
+
     if (isHtml || isCss || hls || dash) {
       const text = await up.text();
       const rewritten = isHtml ? rewriteHtml(text, source, upstream.href, req.hubShellOrigin)
@@ -247,7 +285,8 @@ export function createProxy({ sources, filters, log = () => {} }) {
         : hls ? rewriteM3u8(text, source, upstream.href)
         : rewriteMpd(text, source, upstream.href);
       out['content-type'] = hls ? 'application/vnd.apple.mpegurl' : dash ? 'application/dash+xml' : ctype;
-      out['cache-control'] = 'no-store';
+      if (!policy.ok) out['cache-control'] = 'no-store';
+      if (isCss) keep(Buffer.from(rewritten), true);
       if (isHtml) {
         // Everything the page loads must come from the hub origin (all URLs are rewritten to it, and
         // the content script rewrites script-made requests). Direct loads from any other host are refused.
@@ -257,6 +296,16 @@ export function createProxy({ sources, filters, log = () => {} }) {
       }
       res.writeHead(up.status, out);
       res.end(rewritten);
+      return;
+    }
+    if (policy.ok && up.body && !(declared > cache.maxEntry)) {
+      // Small enough to keep: read it whole, send it, remember it.
+      let body;
+      try { body = Buffer.from(await up.arrayBuffer()); } catch (e) { log('upstream-error', upstream.href, e.message); res.destroy(); return; }
+      out['content-length'] = String(body.length);
+      res.writeHead(up.status, out);
+      res.end(body);
+      keep(body, false);
       return;
     }
     res.writeHead(up.status, out);
@@ -269,5 +318,5 @@ export function createProxy({ sources, filters, log = () => {} }) {
   /** Forget recorded blocks a new allow pattern now covers, so the Settings screen stops offering them. */
   const forgetBlocked = (sourceId, re) => { const m = stats.blockedHosts.get(sourceId); if (m) for (const h of [...m.keys()]) if (re.test(h)) m.delete(h); };
 
-  return { handle, stats, hubUrlFor, rewriteHtml, rewriteM3u8, rewriteMpd, blockedHosts, forgetBlocked };
+  return { handle, stats, cache, hubUrlFor, rewriteHtml, rewriteM3u8, rewriteMpd, blockedHosts, forgetBlocked };
 }

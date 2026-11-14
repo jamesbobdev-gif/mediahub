@@ -20,7 +20,7 @@ const state = {
   portalDepth: 0, goingBack: false, portalSource: null, goodUrls: [], blockedRedirects: 0,
   playKey: null, playTitle: null, playItemId: null,
   query: '', searchReturn: 'home',
-  decisions: null,
+  decisions: null, cache: null,
   metrics: { focus: [] },
 };
 
@@ -348,11 +348,14 @@ function toggleHud() {
   if (hud.hidden) return;
   if (state.view === 'portal') portal.send({ type: 'hub:decisions' });
   renderHud();
+  fetch('/api/status').then((r) => r.json()).then((s) => { state.cache = s.cache; if (!hud.hidden) renderHud(); }).catch(() => {});
 }
 function renderHud() {
   const p = (arr) => arr.length ? [50, 95].map((q) => `p${q}=${arr.slice().sort((a, b) => a - b)[Math.floor((q / 100) * (arr.length - 1))].toFixed(1)}ms`).join(' ') : 'n/a';
-  const d = state.decisions;
-  hud.textContent = `platform=${PLATFORM} view=${state.view} mode=${state.mode} depth=${state.portalDepth}\nportal origin: ${portal?.origin || '-'}\nfocus latency ${p(state.metrics.focus)}\n`
+  const d = state.decisions, c = state.cache;
+  const cacheLine = !c ? '' : !c.maxBytes ? 'hub cache: off\n'
+    : `hub cache: ${c.entries} files, ${(c.bytes / 1048576).toFixed(1)} of ${Math.round(c.maxBytes / 1048576)} MB, ${c.hits} hits / ${c.misses} misses\n`;
+  hud.textContent = `platform=${PLATFORM} view=${state.view} mode=${state.mode} depth=${state.portalDepth}\nportal origin: ${portal?.origin || '-'}\nfocus latency ${p(state.metrics.focus)}\n${cacheLine}`
     + (d ? `portal decisions: ${d.total} (${d.hidden} hidden, ${d.total - d.hidden} popups/links blocked)\n` + d.recent.map((x) => `  ${x.kind} ${x.reason || ''} ${x.tag || ''} ${x.cls || x.url || ''}`).join('\n') : '');
 }
 

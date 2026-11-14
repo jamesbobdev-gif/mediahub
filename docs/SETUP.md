@@ -257,6 +257,19 @@ cd ~/mediahub && git update-index --skip-worktree config/sources.json
 | What got blocked and why | Settings on the TV, under the source; or open `http://<pi>:8787/api/status` |
 | Re-run ingestion now | `curl -X POST http://<pi>:8787/api/ingest/run` |
 | Stop / start | `sudo systemctl stop mediahub` / `sudo systemctl start mediahub` |
+| How much the hub is answering from memory | `http://<pi>:8787/api/status`, under `cache`; or press the info key on the TV |
+
+### Faster opens, at a price
+
+The hub keeps a copy of the scripts, stylesheets, pictures and fonts a site sent, in memory, up
+to 256 MB. The first open of a site still fetches everything from the internet; from the second
+open on, most of those files come straight from the Pi, so the site appears in a fraction of the
+time. The trade-off: when a site changes one of those files, the TV can keep showing the old one
+for up to an hour (scripts and styles) or a day (pictures and fonts). Pages themselves, video and
+anything personal are never kept, so what you watch and what is on the page is always current.
+To change the size, add `Environment=HUB_CACHE_MB=512` (any number of megabytes) to
+`/etc/systemd/system/mediahub.service` under `[Service]` and restart the hub; `HUB_CACHE_MB=0`
+turns the copy off. Restarting the hub also empties it.
 
 ## Troubleshooting
 
