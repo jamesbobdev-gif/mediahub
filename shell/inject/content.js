@@ -101,6 +101,50 @@
     }
   }, true);
 
+  // ---- 3a. Play at once ----------------------------------------------------------
+  // A title chosen on the hub's home screen should start without a visit to the site's page: press
+  // the page's own play control if it has one, then take over the video once it carries a source.
+  // A preview or trailer video is not taken while a play control is still there to press.
+  const PLAY_WORDS = /^(play|play now|play movie|play episode|play video|watch|watch now|watch free|watch for free|resume|continue watching|start watching)\b/i;
+  const PLAY_HINT = /\b(play|watch)[-_ ]?(btn|button|cta|now)?\b/i;
+  function labelOf(el) {
+    return (el.getAttribute('aria-label') || el.getAttribute('title') || (el.textContent || '').slice(0, 200)).replace(/\s+/g, ' ').trim().slice(0, 60);
+  }
+  function findPlayControl() {
+    let best = null, bestArea = 0;
+    for (const el of queryAll(FOCUSABLE + ',[class*="play" i],[data-testid*="play" i],[id*="play" i]')) {
+      if (el.tagName === 'VIDEO' || el.closest('.hub-hidden,.hub-placeholder')) continue;
+      const r = el.getBoundingClientRect();
+      if (!visible(el, r) || r.width > innerWidth * 0.9) continue;
+      const label = labelOf(el);
+      if (/trailer|preview|playlist|player/i.test(label)) continue;
+      const named = PLAY_WORDS.test(label);
+      const hinted = !label && PLAY_HINT.test(`${el.className} ${el.id} ${el.getAttribute('data-testid') || ''}`);
+      if (!named && !hinted) continue;
+      const area = r.width * r.height * (named ? 2 : 1);
+      if (area > bestArea) { bestArea = area; best = el; }
+    }
+    return best;
+  }
+  function autoplay(m) {
+    const deadline = Date.now() + 20000;
+    let pressed = null;
+    const ready = (v) => !!(v && (v.readyState > 0 || v.currentSrc || v.getAttribute('src') || v.querySelector('source')));
+    const largest = () => queryAll(RULES.player).concat(queryAll('video')).filter((v) => { const r = v.getBoundingClientRect(); return r.width > 0 && r.height > 0; }).sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect(); return rb.width * rb.height - ra.width * ra.height; })[0];
+    const step = () => {
+      const btn = pressed ? null : findPlayControl();
+      if (btn) { pressed = Date.now(); decisions.push({ kind: 'autoplay', tag: btn.tagName, cls: labelOf(btn) }); activate(btn); return false; }
+      const v = largest();
+      if (ready(v) && (pressed || !findPlayControl())) { player.attach(v, m); return true; }
+      return false;
+    };
+    const timer = setInterval(() => {
+      if (step()) return clearInterval(timer);
+      if (Date.now() > deadline) { clearInterval(timer); send({ type: 'hub:noplayer' }); }
+    }, 700);
+    step();
+  }
+
   // ---- 3b. Clickable tracking for focus candidates ------------------------------
   const realAdd = EventTarget.prototype.addEventListener;
   EventTarget.prototype.addEventListener = function (type, fn, opts) {
@@ -415,6 +459,7 @@
       }
       case 'hub:hide': { const el = elOf(m.id); if (el) send({ type: 'hub:hidden', selector: hideUser(el) }); break; }
       case 'hub:play': { const v = (m.id && elOf(m.id)) || queryAll(RULES.player)[0] || queryAll('video')[0]; if (v) player.attach(v, m); else send({ type: 'hub:noplayer' }); break; }
+      case 'hub:autoplay': autoplay(m); break;
       case 'hub:player': if (typeof player[m.cmd] === 'function') player[m.cmd](...(m.args || [])); break;
       case 'hub:decisions': send({ type: 'hub:decisions', total: decisions.length, hidden: decisions.filter((d) => d.kind === 'hide').length, recent: decisions.slice(-8) }); break;
       case 'hub:back': history.back(); break;

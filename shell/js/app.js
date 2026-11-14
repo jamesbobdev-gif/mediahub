@@ -18,7 +18,7 @@ const state = {
   focus: null,             // home/search: {el,x,y,w,h}; portal: {id,x,y,w,h}
   sources: [], env: null,
   portalDepth: 0, goingBack: false, portalSource: null, goodUrls: [], blockedRedirects: 0,
-  playKey: null, playTitle: null, playItemId: null,
+  playKey: null, playTitle: null, playItemId: null, autoplay: false,
   query: '', searchReturn: 'home',
   decisions: null, cache: null,
   metrics: { focus: [] },
@@ -193,7 +193,7 @@ function homeSelect() {
   const el = state.focus?.el; if (!el) return;
   if ('search' in el.dataset) return openSearch();
   if ('settings' in el.dataset) return openSettings();
-  if (el.dataset.key) { const p = progress.get(el.dataset.key); if (p) return openPortal(p.portalUrl, { key: el.dataset.key, title: p.title, itemId: p.itemId }); }
+  if (el.dataset.key) { const p = progress.get(el.dataset.key); if (p) return openPortal(p.portalUrl, { key: el.dataset.key, title: p.title, itemId: p.itemId, autoplay: true }); }
   if (el.dataset.portal) return openPortal(el.dataset.portal);
   openItem(el.dataset.id);
 }
@@ -201,7 +201,7 @@ function openItem(id) {
   const it = catalog.items.get(id);
   const src = it?.sources.find((s) => s.itemUrl);
   if (!src) return say('No source URL for this title');
-  openPortal(portalPathFor(src.sourceId, src.itemUrl), { key: it.id, title: it.title, itemId: it.id });
+  openPortal(portalPathFor(src.sourceId, src.itemUrl), { key: it.id, title: it.title, itemId: it.id, autoplay: true });
 }
 
 // ---------- settings view ----------
@@ -211,9 +211,9 @@ async function reloadSources() {
 }
 
 // ---------- portal view ----------
-function openPortal(path, { key = null, title = null, itemId = null } = {}) {
+function openPortal(path, { key = null, title = null, itemId = null, autoplay = false } = {}) {
   if (state.view === 'settings') state.searchReturn = 'settings';
-  state.playKey = key; state.playTitle = title; state.playItemId = itemId;
+  state.playKey = key; state.playTitle = title; state.playItemId = itemId; state.autoplay = autoplay;
   state.portalDepth = 0; state.goingBack = false; state.goodUrls = [path]; state.blockedRedirects = 0;
   state.portalSource = (path.match(/^\/p\/([^/]+)/) || [])[1] || null;
   // A dark source's frame is dark between pages too, so a navigation never flashes white.
@@ -232,6 +232,13 @@ function wirePortal() {
     if (state.goodUrls.length > 20) state.goodUrls.shift();
     if (state.goingBack) { state.goingBack = false; state.portalDepth = Math.max(1, state.portalDepth - 1); } else state.portalDepth++;
     setTimeout(refreshFocus, 50);
+    // A title chosen on the home screen plays at once: the page presses its own play control and
+    // hands the video over. Only the first page of the visit; a later page is the user's own doing.
+    if (state.autoplay && state.portalDepth === 1) {
+      state.autoplay = false;
+      say(`Starting ${state.playTitle || 'playback'}...`);
+      setTimeout(() => { if (state.view === 'portal' && !player.active) portal.send({ type: 'hub:autoplay', resumeAt: resumeFor() }); }, 600);
+    }
   };
   portal.onCandidates = () => { if (state.view === 'portal' && !player.active) refreshFocus(); };
   portal.onBlocked = () => {
@@ -251,7 +258,7 @@ function wirePortal() {
       say(r.ok ? `Hidden and saved: ${selector}` : `Hidden (save failed: HTTP ${r.status})`);
     } catch (e) { say(`Hidden (save failed: ${e.message})`); }
   };
-  portal.onNoPlayer = () => say('No player on this page');
+  portal.onNoPlayer = () => { say('No player found on this page. Pick it with the remote.'); refreshFocus(); };
   portal.onDecisions = (d) => { state.decisions = d; if (!hud.hidden) renderHud(); };
   player.onEnd = () => stopPlayback();
   player.onProgress = (t, d) => {
