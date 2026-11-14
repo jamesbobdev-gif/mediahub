@@ -24,14 +24,15 @@ export class PortalFrame {
     this.startHeartbeat();
   }
 
-  /** Heartbeat: a hub page answers pings. Two misses in a row means the frame is no longer a hub
+  /** Heartbeat: a hub page answers pings. Four misses in a row means the frame is no longer a hub
    *  page (escaped, crashed, or refused), whatever events the browser did or did not fire. */
   startHeartbeat() {
     clearInterval(this._hb);
     this._hb = setInterval(() => {
       if (!this.frame.src || this.frame.src === 'about:blank') return;
       if (performance.now() - this.loadAt < 1500) return;          // still loading
-      if (this.missed >= 2) { this.missed = 0; this.ready = false; this.onBlocked(); return; }
+      // A heavy page can hold its main thread for a few seconds on a TV; only a longer silence means it is gone.
+      if (this.missed >= 4) { this.missed = 0; this.ready = false; this.onBlocked(); return; }
       this.missed++;
       this.send({ type: 'hub:ping', n: Date.now() });
     }, 1000);

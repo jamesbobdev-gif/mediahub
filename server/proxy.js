@@ -15,6 +15,7 @@ const STRIP_RESPONSE = new Set([
   ...HOP_BY_HOP, 'content-security-policy', 'content-security-policy-report-only',
   'x-frame-options', 'cross-origin-opener-policy', 'cross-origin-embedder-policy',
   'cross-origin-resource-policy', 'content-length', 'content-encoding', 'strict-transport-security',
+  'alt-svc',   // would point the TV at the real host over QUIC
 ]);
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36 MediaHub/0.1';
 

@@ -114,6 +114,7 @@ export class Catalog {
   pendingArtwork(limit = 50) { return this.q.pendingArt.all(limit).map((r) => r.url); }
   /** Artwork becoming available is a change the TV needs to see: bump the owning items. */
   setArtworkHash(url, hash, w, h) {
+    if (this.closed) return;                       // a poster finishing after shutdown has nowhere to go
     this.q.setArtHash.run(hash, w ?? null, h ?? null, url);
     for (const r of this.q.artOwners.all(url)) { this.seq++; this.q.touch.run(this.seq, r.item_id); }
   }
@@ -133,5 +134,5 @@ export class Catalog {
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
     return res;
   }
-  close() { this.db.close(); }
+  close() { if (this.closed) return; this.closed = true; this.db.close(); }
 }

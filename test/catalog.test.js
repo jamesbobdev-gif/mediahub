@@ -52,3 +52,11 @@ test('removing a source drops the titles only it provided and re-sends shared on
   assert.deepEqual(c.removeSource('zzz'), { removed: 0, kept: 0 });
   c.close();
 });
+
+test('a poster that finishes after the catalog closed is dropped, and closing twice is harmless', () => {
+  const c = new Catalog(':memory:');
+  c.upsertMany([normaliseRecord({ title: 'Late Poster (2020)', url: 'http://a/3', image: 'http://a/3.jpg' }, 'a')]);
+  c.close();
+  assert.doesNotThrow(() => c.setArtworkHash('http://a/3.jpg', 'abc', 300, 450));
+  assert.doesNotThrow(() => c.close());
+});
