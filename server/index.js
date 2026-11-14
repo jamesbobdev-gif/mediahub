@@ -5,7 +5,8 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, watch } from 'node:fs';
-import { loadSources, reloadSources, patchSourceRules } from './sources.js';
+import { loadSources, reloadSources, patchSourceRules, addSource, removeSource, allowHost, setSourceFeed } from './sources.js';
+import { discoverFeed } from './ingest/discover.js';
 import { loadFilters, compileFilters } from './filters.js';
 import { loadAccess, clientAllowed } from './access.js';
 import { readFileSync } from 'node:fs';
@@ -82,8 +83,55 @@ async function route(req, res) {
   if (p.startsWith('/p/') || p.startsWith('/x/')) { res.writeHead(404, { 'content-type': 'text/plain' }).end('portal content is served on the portal port'); return; }
 
   if (p === '/api/env') return json(res, 200, { portalOrigin: `http://${hostnameOf(req)}:${PORTAL_PORT}`, version: '0.2.0' });
-  if (p === '/api/sources') {
-    return json(res, 200, [...sources.values()].map((s) => ({ id: s.id, name: s.name, home: `/p/${s.id}${s.home || '/'}`, rules: s.rules })));
+  const publicSource = (s) => ({ id: s.id, name: s.name, origin: s.origin, home: `/p/${s.id}${s.home || '/'}`, rules: s.rules, allowHosts: s.allowHosts || [], feed: s.feed ? { type: s.feed.type || (s.feed.itemRegex ? 'html' : 'json'), url: s.feed.url } : null });
+  if (p === '/api/sources' && req.method === 'GET') return json(res, 200, [...sources.values()].map(publicSource));
+  // The Settings screen: add a source by name and address, remove one, allow a host it needs.
+  // Each writes config/sources.json the way the rule inspector does; the hub reloads it in place.
+  if (p === '/api/sources' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    let entry;
+    try { entry = addSource(SOURCES_FILE, body); } catch (e) { return json(res, 400, { error: e.message }); }
+    reloadConfig('source-added');
+    log('source added', entry.id, entry.origin);
+    return json(res, 201, publicSource(sources.get(entry.id) || entry));
+  }
+  const sourceMatch = p.match(/^\/api\/sources\/([^/]+)$/);
+  if (sourceMatch && req.method === 'DELETE') {
+    const id = decodeURIComponent(sourceMatch[1]);
+    if (!sources.has(id)) return json(res, 404, { error: 'unknown source' });
+    removeSource(SOURCES_FILE, id);
+    reloadConfig('source-removed');
+    const titles = catalog.removeSource(id);
+    log('source removed', id, `titles removed ${titles.removed}, kept ${titles.kept}`);
+    return json(res, 200, { id, removed: true, titles });
+  }
+  // Find what the hub can pull titles from for a source (structured data, RSS, video sitemaps),
+  // store it as the source's feed, and pull it now so the home screen fills in.
+  const discoverMatch = p.match(/^\/api\/sources\/([^/]+)\/discover$/);
+  if (discoverMatch && req.method === 'POST') {
+    const id = decodeURIComponent(discoverMatch[1]);
+    const s = sources.get(id);
+    if (!s) return json(res, 404, { error: 'unknown source' });
+    let found = null;
+    try { found = await discoverFeed(s.origin, s.home || '/', { log }); } catch (e) { log('discover failed', id, e.message); }
+    if (!found) { log('discover', id, 'nothing found'); return json(res, 200, { id, found: false }); }
+    setSourceFeed(SOURCES_FILE, id, found.feed, { intervalSec: found.intervalSec });
+    reloadConfig('feed-found');
+    log('discover', id, found.how, found.feed.url, `${found.items.length} titles in the sample`);
+    scheduler.run(id).catch((e) => log('ingest-error', id, e.message));
+    return json(res, 200, { id, found: true, how: found.how, url: found.feed.url, sample: found.items.length, titles: found.items.slice(0, 5).map((x) => x.title) });
+  }
+  const allowMatch = p.match(/^\/api\/sources\/([^/]+)\/allow$/);
+  if (allowMatch && req.method === 'POST') {
+    const id = decodeURIComponent(allowMatch[1]);
+    if (!sources.has(id)) return json(res, 404, { error: 'unknown source' });
+    const { host } = await readJsonBody(req);
+    let r;
+    try { r = allowHost(SOURCES_FILE, id, host); } catch (e) { return json(res, 400, { error: e.message }); }
+    reloadConfig('allow-host');
+    proxy.forgetBlocked(id, new RegExp(r.pattern, 'i'));
+    log('host allowed', id, r.site);
+    return json(res, 200, { id, site: r.site, pattern: r.pattern, added: r.added, allowHosts: sources.get(id)?.allowHosts || [] });
   }
   if (p === '/api/catalog') {
     const since = Number(url.searchParams.get('since') || 0);
@@ -119,6 +167,7 @@ async function route(req, res) {
       items: catalog.count(), head: catalog.seq,
       ingest: Object.fromEntries(scheduler.status),
       proxy: { requests: proxy.stats.requests, blocked: proxy.stats.blocked, byReason: Object.fromEntries(proxy.stats.byReason) },
+      blockedHosts: Object.fromEntries([...sources.keys()].map((id) => [id, proxy.blockedHosts(id)]).filter(([, list]) => list.length)),
     });
   }
 

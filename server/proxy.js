@@ -45,8 +45,30 @@ export function unscopeCookieHeader(header, source) {
   return out.join('; ');
 }
 
+const BLOCKED_HOSTS_KEPT = 60;
+
+/** Remember a strict third-party block per source and host. Ad-list and ad-size blocks are not
+ *  kept: allowing a host does not lift those, so the TV has nothing to offer for them. */
+export function noteBlockedHost(map, sourceId, host, verdict) {
+  if (!verdict.block || !String(verdict.reason || '').startsWith('third-party-')) return;
+  let m = map.get(sourceId);
+  if (!m) map.set(sourceId, m = new Map());
+  const e = m.get(host) || { host, count: 0, kinds: new Set(), last: 0 };
+  e.count++; e.kinds.add(verdict.destination); e.last = Date.now();
+  m.delete(host); m.set(host, e);                       // most recent last
+  while (m.size > BLOCKED_HOSTS_KEPT) m.delete(m.keys().next().value);
+}
+
+export function blockedHostsFor(map, sourceId) {
+  const m = map.get(sourceId);
+  if (!m) return [];
+  return [...m.values()].map((e) => ({ host: e.host, count: e.count, kinds: [...e.kinds], last: e.last })).sort((a, b) => b.count - a.count || a.host.localeCompare(b.host));
+}
+
 export function createProxy({ sources, filters, log = () => {} }) {
-  const stats = { requests: 0, blocked: 0, byReason: new Map() };
+  // blockedHosts: sourceId -> Map(host -> {host, count, kinds, last}) for the third-party blocks a
+  // source's pages ran into, which is what the Settings screen offers to allow.
+  const stats = { requests: 0, blocked: 0, byReason: new Map(), blockedHosts: new Map() };
 
   /** Map an absolute upstream URL to a hub-origin path. */
   function hubUrlFor(absolute, source) {
@@ -127,11 +149,12 @@ export function createProxy({ sources, filters, log = () => {} }) {
     return html;
   }
 
-  function record(result) {
+  function record(result, source, upstream) {
     stats.requests++;
     if (result.block) {
       stats.blocked++;
       stats.byReason.set(result.reason, (stats.byReason.get(result.reason) || 0) + 1);
+      noteBlockedHost(stats.blockedHosts, source.id, upstream.hostname, result);
     }
   }
 
@@ -167,7 +190,7 @@ export function createProxy({ sources, filters, log = () => {} }) {
     const { source, upstream, firstParty } = r;
     const destination = destinationFor(req.headers, upstream.href);
     const verdict = classify(filters, upstream.href, { destination, firstParty, allowHosts: source.allowHostsRe || [] });
-    record(verdict);
+    record(verdict, source, upstream);
     if (verdict.block) {
       const ph = placeholderFor(destination);
       log('blocked', destination, verdict.reason, upstream.href);
@@ -241,5 +264,10 @@ export function createProxy({ sources, filters, log = () => {} }) {
     Readable.fromWeb(up.body).on('error', () => res.destroy()).pipe(res);
   }
 
-  return { handle, stats, hubUrlFor, rewriteHtml, rewriteM3u8, rewriteMpd };
+  /** Blocked third-party hosts for a source, most blocked first. */
+  const blockedHosts = (sourceId) => blockedHostsFor(stats.blockedHosts, sourceId);
+  /** Forget recorded blocks a new allow pattern now covers, so the Settings screen stops offering them. */
+  const forgetBlocked = (sourceId, re) => { const m = stats.blockedHosts.get(sourceId); if (m) for (const h of [...m.keys()]) if (re.test(h)) m.delete(h); };
+
+  return { handle, stats, hubUrlFor, rewriteHtml, rewriteM3u8, rewriteMpd, blockedHosts, forgetBlocked };
 }

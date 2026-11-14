@@ -180,10 +180,21 @@ you would for any browsing, and only configure sources you trust.
 
 ## Adding a source
 
-Add an entry to `config/sources.json` with `origin` (the portal), a `feed` block describing its
-JSON endpoint or HTML list page, and `rules`. Save the file: the hub watches `config/` and
-reloads sources and filters in place, scheduling new sources within a second. The TV app itself
-never changes.
+From the TV: the Settings screen (the card at the end of the Sources row, or the remote's menu
+button) adds a source by name and address, removes one, and allows the hosts a source needs that
+strict mode blocked. On add, the hub looks for something it can pull titles from, in this order:
+JSON-LD lists on the page (`ItemList`, `VideoObject`, `Movie`, `TVSeries`), an RSS or Atom feed
+the page declares or one at a usual path, then the video sitemaps named in `robots.txt`. The first
+with enough titles is stored as the source's `feed` and pulled on the usual schedule
+(`server/ingest/discover.js`). A site with none of those still opens as a page.
+
+By hand: add an entry to `config/sources.json` with `origin` (the portal), a `feed` block
+describing its JSON endpoint or HTML list page, and `rules`. Save the file: the hub watches
+`config/` and reloads sources and filters in place, scheduling new sources within a second. The
+TV app itself never changes.
+
+The TV's changes go through `POST /api/sources`, `DELETE /api/sources/<id>`,
+`POST /api/sources/<id>/allow` and `POST /api/sources/<id>/discover`, which write the same file.
 
 Only point this at sources you are entitled to access and scrape.
 

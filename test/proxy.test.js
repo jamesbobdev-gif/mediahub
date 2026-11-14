@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createProxy, isPrivateHost, scopeSetCookie, unscopeCookieHeader } from '../server/proxy.js';
+import { createProxy, isPrivateHost, scopeSetCookie, unscopeCookieHeader, noteBlockedHost, blockedHostsFor } from '../server/proxy.js';
 import { compileFilters } from '../server/filters.js';
 
 const sources = new Map([['demo', { id: 'demo', originUrl: new URL('https://portal.test/app/'), rules: { css: ['.hero'], removeOnMount: [], preserve: ['.grid'], scrollRoot: '.grid', player: 'video', touch: false } }]]);
@@ -61,4 +61,26 @@ test('html rewrite injects viewport, rules, content script and rewrites urls', (
   assert.match(out, /src="\/x\/demo\/https%3A%2F%2Fcdn\.test%2Fi\.png"/);
   assert.match(out, /url\(\/p\/demo\/bg\.png\)/);
   assert.match(out, /\.hero\{display:none !important\}/);
+});
+
+test('blocked third-party hosts are kept per source for the Settings screen; ad-list blocks are not', () => {
+  const map = new Map();
+  noteBlockedHost(map, 'tubi', 'abproxy.tubi.io', { block: true, reason: 'third-party-other:abproxy.tubi.io', destination: 'other' });
+  noteBlockedHost(map, 'tubi', 'abproxy.tubi.io', { block: true, reason: 'third-party-script:abproxy.tubi.io', destination: 'script' });
+  noteBlockedHost(map, 'tubi', 'cdn.tubi.io', { block: true, reason: 'third-party-xhr:cdn.tubi.io', destination: 'xhr' });
+  noteBlockedHost(map, 'tubi', 'ads.doubleclick.net', { block: true, reason: 'host:(^|\\.)doubleclick\\.net$', destination: 'script' });
+  noteBlockedHost(map, 'tubi', 'img.tubi.io', { block: false, destination: 'image' });
+  noteBlockedHost(map, 'pluto', 'api.pluto.tv', { block: true, reason: 'third-party-xhr:api.pluto.tv', destination: 'xhr' });
+  const tubi = blockedHostsFor(map, 'tubi');
+  assert.deepEqual(tubi.map((e) => [e.host, e.count, e.kinds]), [['abproxy.tubi.io', 2, ['other', 'script']], ['cdn.tubi.io', 1, ['xhr']]]);
+  assert.deepEqual(blockedHostsFor(map, 'pluto').map((e) => e.host), ['api.pluto.tv']);
+  assert.deepEqual(blockedHostsFor(map, 'none'), []);
+});
+
+test('the proxy forgets blocks an allow pattern now covers', () => {
+  const p = createProxy({ sources, filters: compileFilters({}) });
+  noteBlockedHost(p.stats.blockedHosts, 'demo', 'a.cdn.test', { block: true, reason: 'third-party-script:a.cdn.test', destination: 'script' });
+  noteBlockedHost(p.stats.blockedHosts, 'demo', 'b.other.test', { block: true, reason: 'third-party-script:b.other.test', destination: 'script' });
+  p.forgetBlocked('demo', /(^|\.)cdn\.test$/i);
+  assert.deepEqual(p.blockedHosts('demo').map((e) => e.host), ['b.other.test']);
 });

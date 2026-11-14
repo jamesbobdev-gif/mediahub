@@ -151,18 +151,32 @@ a Pi there is no firewall by default; on a Windows PC allow both:
 netsh advfirewall firewall add rule name="Media Hub" dir=in action=allow protocol=TCP localport=8787-8788
 ```
 
-## Step 5. Replace the demo sources with real ones
+## Step 5. Add your sources from the TV
 
 Everything you see at first is demo data served by the hub itself (two fake portals, 24 made-up
-titles). Edit the sources file:
+titles). Replace it from the couch: on the home screen, open the **Settings** card at the end of
+the Sources row (or press the remote's menu button). The screen has the list of sources on the
+left and, on the right, what the hub knows about the one under focus.
 
-```bash
-nano ~/mediahub/config/sources.json
-```
+**Add a source.** Choose "Add a source", type a name and the site's address with the on-screen
+keyboard (`pluto.tv` is enough; a page like `pluto.tv/us/on-demand` also works) and choose Save.
+The hub then looks for a list of titles on that site: structured data on its pages, an RSS feed,
+or its video sitemap. When it finds one, the site's titles and posters show up on the home screen
+within a minute or two. When it finds nothing, the source still opens as a page from its card;
+"Find its titles" tries again later. "Pull titles now" refreshes a source that has a feed.
 
-Delete the demo entries and add yours. Each source needs the portal's address, a feed (JSON
-endpoint or HTML list page) and rules. The format is documented in the
-[README](../README.md#adding-a-source). The file reloads on save.
+**Remove a source.** Focus it, choose "Remove this source", and press OK again to confirm. Its
+titles leave the home screen.
+
+**Allow what a source needs.** If a source shows a blank page or no player, strict mode blocked
+something it loads from another host. Open the source, let it try, then come back to Settings:
+under "Blocked for this source" each host it asked for is listed with an Allow button. Allowing
+one allows that whole site (for `abproxy.production-public.tubi.io`, all of `tubi.io`). Ads and
+trackers are better left blocked; allow only the hosts the source needs to work.
+
+All of this writes `~/mediahub/config/sources.json` on the Pi, the same file you can still edit
+by hand for feeds the finder cannot work out (the format is in the
+[README](../README.md#adding-a-source)). The file reloads on save either way.
 
 To clear the demo titles from the catalog:
 
@@ -227,8 +241,12 @@ cd ~/mediahub && git pull && sudo systemctl restart mediahub
 ```
 
 Your `config/` files are not touched by updates unless you edited the demo entries in place, in
-which case git will tell you about a conflict. Copying your config to `config.local/` and
-symlinking is a reasonable way to keep them separate if you update often.
+which case git will tell you about a conflict. To keep your edited `sources.json` out of every
+future update, tell git once to leave it alone:
+
+```bash
+cd ~/mediahub && git update-index --skip-worktree config/sources.json
+```
 
 ## Useful commands
 
@@ -236,7 +254,7 @@ symlinking is a reasonable way to keep them separate if you update often.
 |---|---|
 | Hub status | `systemctl status mediahub` |
 | Live log | `journalctl -u mediahub -f` |
-| What got blocked and why | open `http://<pi>:8787/api/status` |
+| What got blocked and why | Settings on the TV, under the source; or open `http://<pi>:8787/api/status` |
 | Re-run ingestion now | `curl -X POST http://<pi>:8787/api/ingest/run` |
 | Stop / start | `sudo systemctl stop mediahub` / `sudo systemctl start mediahub` |
 
@@ -246,8 +264,14 @@ symlinking is a reasonable way to keep them separate if you update often.
 router gave it a new one. Fix the file or reserve the TV's address.
 
 **Page loads but a portal shows blank or missing player.** Strict mode blocked a script the
-portal needs (its player CDN, for example). Open `/api/status`, find the host under
+portal needs (its player CDN, for example). On the TV, open Settings, focus the source and allow
+the host under "Blocked for this source". By hand: open `/api/status`, find the host under
 `third-party-script:…`, and add it to that source's `allowHosts`.
+
+**A source added from the TV has no titles on the home screen.** The finder found no list on
+that site (no structured data, RSS feed or video sitemap). The source still opens from its card.
+If you know a page or feed that lists its titles, add a `feed` block to its entry in
+`config/sources.json` by hand, as in the README.
 
 **Video stutters.** Check the Pi is on Ethernet, not Wi-Fi. On a Pi 3, 4K streams may exceed the
 100 Mbit port.

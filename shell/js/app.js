@@ -6,13 +6,14 @@ import { CatalogCache, ArtworkLru } from './catalog.js';
 import { PortalFrame } from './portal.js';
 import { progress } from './progress.js';
 import { search, KEY_ROWS } from './search.js';
+import { SettingsView } from './settings.js';
 
 const $ = (s) => document.querySelector(s);
-const views = { home: $('#view-home'), search: $('#view-search'), portal: $('#view-portal') };
+const views = { home: $('#view-home'), search: $('#view-search'), settings: $('#view-settings'), portal: $('#view-portal') };
 const ring = $('#focus-ring'), cursorEl = $('#cursor'), toast = $('#toast'), osd = $('#osd'), hud = $('#hud');
 
 const state = {
-  view: 'home',            // 'home' | 'search' | 'portal'
+  view: 'home',            // 'home' | 'search' | 'settings' | 'portal'
   mode: 'spatial',         // 'spatial' | 'cursor'
   focus: null,             // home/search: {el,x,y,w,h}; portal: {id,x,y,w,h}
   sources: [], env: null,
@@ -25,7 +26,7 @@ const state = {
 
 const catalog = new CatalogCache();
 const art = new ArtworkLru();
-let portal, player;
+let portal, player, settings;
 const cursor = new VirtualCursor({ el: cursorEl, bounds: () => ({ w: innerWidth, h: innerHeight }) });
 
 // ---------- focus ring ----------
@@ -36,7 +37,9 @@ function setFocus(c, { scroll = true } = {}) {
   if (state.view !== 'portal') { c.el.classList.add('focused'); if (scroll) c.el.scrollIntoView({ block: 'nearest', inline: 'center' }); }
   else if (scroll) portal.send({ type: 'hub:anchor', id: c.id });
   drawRing(c);
+  if (state.view === 'settings') settings.onFocus(c.el);
 }
+const focusEl = (el) => { const r = el.getBoundingClientRect(); setFocus({ el, x: r.left, y: r.top, w: r.width, h: r.height }); };
 function drawRing(c) {
   if (c.el?.classList?.contains('key')) { ring.hidden = true; return; }
   let { x, y, w, h } = c;
@@ -91,9 +94,14 @@ function row(title, tiles) {
   const wrap = s.querySelector('.row-tiles'); for (const t of tiles) wrap.appendChild(t);
   return s;
 }
+/** Catalog items from a source that still exists; a removed source's titles linger in the mirror. */
+function visibleItems() {
+  const known = new Set(state.sources.map((s) => s.id));
+  return catalog.list().filter((it) => it.sources.some((s) => known.has(s.sourceId)));
+}
 function renderHome() {
   const rows = $('#rows'); rows.innerHTML = '';
-  const items = catalog.list();
+  const items = visibleItems();
   $('#home-count').textContent = `${items.length} titles · ${state.sources.length} sources`;
   const sub = (it) => [it.year, it.kind === 'episode' && it.season != null ? `S${it.season}E${it.episode ?? '?'}` : null, it.sources.map((s) => s.sourceId).join(', ')].filter(Boolean).join(' · ');
   const byKind = (k) => items.filter((i) => i.kind === k).map((it) => tile({ id: it.id, title: it.title, sub: sub(it) }));
@@ -101,7 +109,8 @@ function renderHome() {
   const countFor = (id) => items.filter((i) => i.sources.some((s) => s.sourceId === id)).length;
   const srcs = state.sources.map((s) => tile({ portal: s.home, title: s.name, sub: `${countFor(s.id)} titles · open portal`, icon: '⌂', online: true }));
   const searchTile = tile({ title: 'Search', sub: `${items.length} titles across ${state.sources.length} sources`, icon: '⌕' }); searchTile.dataset.search = '';
-  for (const r of [row('Continue watching', cont), row('Sources', [searchTile, ...srcs]), row('Movies', byKind('movie')), row('Series', byKind('series')), row('Episodes', byKind('episode'))]) if (r) rows.appendChild(r);
+  const settingsTile = tile({ title: 'Settings', sub: 'Add or remove sources, allow what they need', icon: '⚙' }); settingsTile.dataset.settings = '';
+  for (const r of [row('Continue watching', cont), row('Sources', [searchTile, ...srcs, settingsTile]), row('Movies', byKind('movie')), row('Series', byKind('series')), row('Episodes', byKind('episode'))]) if (r) rows.appendChild(r);
   lazyArtwork($('#rows'));
 }
 const fmtMin = (s) => `${Math.max(1, Math.round(s / 60))} min`;
@@ -152,7 +161,7 @@ function renderSearch() {
   qEl.textContent = ''; qEl.append(state.query, Object.assign(document.createElement('span'), { className: 'caret' }));
   const rows = $('#search-rows'); rows.innerHTML = '';
   if (!state.query) { rows.innerHTML = `<div class="search-hint">Search ${catalog.items.size} titles across ${state.sources.length} source${state.sources.length === 1 ? '' : 's'}. Results appear as you type; typos are fine.</div>`; return; }
-  const results = search(catalog.list(), state.query);
+  const results = search(visibleItems(), state.query);
   const sub = (it) => [it.year, it.kind, it.sources.map((s) => s.sourceId).join(', ')].filter(Boolean).join(' · ');
   const r = row(`${results.length} result${results.length === 1 ? '' : 's'} for “${state.query}”`, results.map((it) => tile({ id: it.id, title: it.title, sub: sub(it) })));
   if (r) rows.appendChild(r); else rows.innerHTML = `<div class="empty">Nothing matches “${state.query}”</div>`;
@@ -183,6 +192,7 @@ function portalPathFor(sourceId, absUrl) {
 function homeSelect() {
   const el = state.focus?.el; if (!el) return;
   if ('search' in el.dataset) return openSearch();
+  if ('settings' in el.dataset) return openSettings();
   if (el.dataset.key) { const p = progress.get(el.dataset.key); if (p) return openPortal(p.portalUrl, { key: el.dataset.key, title: p.title, itemId: p.itemId }); }
   if (el.dataset.portal) return openPortal(el.dataset.portal);
   openItem(el.dataset.id);
@@ -194,8 +204,15 @@ function openItem(id) {
   openPortal(portalPathFor(src.sourceId, src.itemUrl), { key: it.id, title: it.title, itemId: it.id });
 }
 
+// ---------- settings view ----------
+function openSettings() { if (state.view !== 'settings') showView('settings'); }
+async function reloadSources() {
+  try { state.sources = await fetch('/api/sources').then((r) => r.json()); } catch (e) { say(`Could not reload sources: ${e.message}`); }
+}
+
 // ---------- portal view ----------
 function openPortal(path, { key = null, title = null, itemId = null } = {}) {
+  if (state.view === 'settings') state.searchReturn = 'settings';
   state.playKey = key; state.playTitle = title; state.playItemId = itemId;
   state.portalDepth = 0; state.goingBack = false; state.goodUrls = [path]; state.blockedRedirects = 0;
   state.portalSource = (path.match(/^\/p\/([^/]+)/) || [])[1] || null;
@@ -276,9 +293,10 @@ function showView(name) {
   if (name !== 'portal') { portal.stopHeartbeat(); portal.frame.src = 'about:blank'; portal.ready = false; portal.cands = []; cursor.hide(); state.mode = 'spatial'; player.state = { ...player.state, active: false }; osd.hidden = true; }
   if (name === 'home') renderHome();
   if (name === 'search') renderSearch();
+  if (name === 'settings') settings.open(); else settings?.close();
   refreshFocus();
 }
-function leavePortal() { showView(state.searchReturn === 'search' ? 'search' : 'home'); state.searchReturn = 'home'; }
+function leavePortal() { showView(['search', 'settings'].includes(state.searchReturn) ? state.searchReturn : 'home'); state.searchReturn = 'home'; }
 function setMode(mode) {
   state.mode = mode;
   if (mode === 'cursor') { cursor.show(); ring.hidden = true; say('Cursor mode'); }
@@ -308,18 +326,19 @@ function dispatch(intent, { repeat, phase }) {
   if (state.mode === 'cursor' && ['up', 'down', 'left', 'right'].includes(intent)) { if (!repeat) cursor.press(intent); return; }
   switch (intent) {
     case 'up': case 'down': case 'left': case 'right': return move(intent);
-    case 'select': return state.view === 'home' ? homeSelect() : state.view === 'search' ? searchSelect() : portalSelect();
+    case 'select': return state.view === 'home' ? homeSelect() : state.view === 'search' ? searchSelect() : state.view === 'settings' ? settings.select(state.focus?.el) : portalSelect();
     case 'search': if (state.view !== 'search') openSearch(); return;
     case 'back':
       if (repeat) return;
       if (state.view === 'search') { if (state.query) setQuery(state.query.slice(0, -1)); else showView('home'); return; }
+      if (state.view === 'settings') { if (!settings.back()) showView('home'); return; }
       if (state.view !== 'portal') return;
       if (state.portalDepth > 1) { state.goingBack = true; portal.send({ type: 'hub:back' }); }
       else leavePortal();
       return;
     case 'mode': case 'cursor': if (state.view === 'portal') setMode(state.mode === 'cursor' ? 'spatial' : 'cursor'); return;
     case 'play': case 'playpause': if (state.view === 'portal') startPlayback(); return;
-    case 'menu': if (state.view === 'portal') inspectHide(); return;
+    case 'menu': if (state.view === 'portal') inspectHide(); else if (state.view === 'home') openSettings(); return;
     case 'info': return toggleHud();
     default: return;
   }
@@ -342,13 +361,15 @@ async function boot() {
   registerPlatformKeys();
   tickClock(); setInterval(tickClock, 15_000);
   window.addEventListener('keydown', (e) => {
-    if (state.view !== 'search' || e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
-    e.preventDefault(); e.stopImmediatePropagation(); typeChar(e.key.toLowerCase());
+    if (e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
+    if (state.view === 'search') { e.preventDefault(); e.stopImmediatePropagation(); typeChar(e.key.toLowerCase()); }
+    else if (state.view === 'settings' && settings.typing()) { e.preventDefault(); e.stopImmediatePropagation(); settings.typeChar(e.key); }
   }, { capture: true });
   installKeyRouter(dispatch);
   state.env = await fetch('/api/env').then((r) => r.json());
   portal = new PortalFrame({ frame: $('#portal-frame'), wrap: $('#portal-wrap'), origin: state.env.portalOrigin });
   player = new Player({ osd, portal });
+  settings = new SettingsView({ root: views.settings, say, focusEl, refocus: refreshFocus, openPortal, onSourcesChanged: reloadSources, focusKey: () => state.focus?.el?.dataset?.fkey });
   wirePortal();
   state.sources = await fetch('/api/sources').then((r) => r.json());
   await catalog.init();
@@ -360,7 +381,8 @@ async function boot() {
   const followScroll = () => { if (ringRaf) return; ringRaf = requestAnimationFrame(() => { ringRaf = 0; if (state.focus && state.view !== 'portal') drawRing(state.focus); }); };
   views.home.addEventListener('scroll', followScroll, { passive: true, capture: true });
   views.search.addEventListener('scroll', followScroll, { passive: true, capture: true });
-  for (const v of [views.home, views.search]) v.addEventListener('click', (e) => { const t = e.target.closest('[data-focusable]'); if (!t) return; const r = t.getBoundingClientRect(); setFocus({ el: t, x: r.left, y: r.top, w: r.width, h: r.height }); state.view === 'home' ? homeSelect() : searchSelect(); });
+  views.settings.addEventListener('scroll', followScroll, { passive: true, capture: true });
+  for (const v of [views.home, views.search, views.settings]) v.addEventListener('click', (e) => { const t = e.target.closest('[data-focusable]'); if (!t) return; focusEl(t); state.view === 'home' ? homeSelect() : state.view === 'search' ? searchSelect() : settings.select(t); });
   window.__app = { state, catalog, portal, player, dispatch, progress };
 }
 boot();

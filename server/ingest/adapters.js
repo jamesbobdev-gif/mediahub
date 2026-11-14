@@ -3,6 +3,7 @@
 // manifest (feed.url, feed.items, feed.map) so a new provider is config, not code.
 
 import { normaliseRecord } from './normalise.js';
+import { fetchText, parseJsonLd, parsePageData, parseRss, parseSitemap, parseOpenGraph, ITEMS_PER_FILE, SITEMAP_FILES } from './discover.js';
 
 export function getPath(obj, path) {
   if (!path) return undefined;
@@ -134,8 +135,55 @@ export function htmlListAdapter(source, { minIntervalMs = 500, log = () => {} } 
   };
 }
 
+const ENRICH_PER_RUN = 40;        // pages opened per run to put real titles and posters on page-list entries
+const enriched = new Map();       // sourceId -> Set of page urls already opened (memory only; artwork stays in the catalog)
+
+/** Feeds the finder (discover.js) sets up: structured data or embedded data on a page, an RSS feed,
+ *  video sitemaps, or plain page lists whose titles and posters are read from the pages themselves. */
+export function discoveredAdapter(source, { minIntervalMs = 500, log = () => {} } = {}) {
+  const feed = source.feed;
+  const records = (items) => items.map((rec) => normaliseRecord(rec, source.id));
+  const paced = (() => { let lastAt = 0; return async () => { const wait = minIntervalMs - (Date.now() - lastAt); if (wait > 0) await sleep(wait); lastAt = Date.now(); }; })();
+  return {
+    id: source.id,
+    async *pages(signal) {
+      const get = (url, accept, maxBytes) => fetchText(url, { signal, accept, maxBytes, log });
+      const xml = 'application/xml,text/xml;q=0.9,*/*;q=0.5';
+      if (feed.type === 'jsonld') { yield records(parseJsonLd((await get(feed.url)).text, feed.url)); }
+      else if (feed.type === 'pagedata') { yield records(parsePageData((await get(feed.url)).text, feed.url)); }
+      else if (feed.type === 'rss') { const r = await get(feed.url, 'application/rss+xml,application/atom+xml,application/xml'); yield records(parseRss(r.text, r.url)); }
+      else if (feed.type === 'sitemap' || feed.type === 'pages') {
+        const files = (feed.files || [feed.url]).slice(0, SITEMAP_FILES);
+        const done = enriched.get(source.id) || new Set();
+        enriched.set(source.id, done);
+        let opened = 0;
+        for (const file of files) {
+          await paced();
+          let parsed;
+          try { const k = await get(file, xml, 48 * 1024 ** 2); parsed = parseSitemap(k.text, k.url); } catch (e) { log('sitemap-skip', file, e.message); continue; }
+          if (feed.type === 'sitemap') { if (parsed.items.length) yield records(parsed.items); continue; }
+          // Page lists: the address gives a rough title now; a few pages per run give the real title and poster.
+          const out = [];
+          for (const p of parsed.pages.slice(0, ITEMS_PER_FILE)) {
+            if (opened < ENRICH_PER_RUN && !done.has(p.url)) {
+              opened++; done.add(p.url);
+              await paced();
+              try { const og = parseOpenGraph((await get(p.url, 'text/html')).text, p.url); if (og.title) p.title = og.title; if (og.image) p.image = og.image; if (og.kind) p.kind = og.kind; }
+              catch (e) { log('page-skip', p.url, e.message); }
+            }
+            out.push(p);
+          }
+          if (out.length) yield records(out);
+        }
+      }
+      log('adapter-done', source.id);
+    },
+  };
+}
+
 export function adapterFor(source, opts) {
   if (!source.feed?.url) return null;
+  if (['jsonld', 'pagedata', 'rss', 'sitemap', 'pages'].includes(source.feed.type)) return discoveredAdapter(source, opts);
   if (source.feed.type === 'html' || source.feed.itemRegex) return htmlListAdapter(source, opts);
   return jsonFeedAdapter(source, opts);
 }

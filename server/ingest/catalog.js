@@ -46,6 +46,11 @@ export class Catalog {
       pendingArt: this.db.prepare('SELECT url FROM artwork WHERE hash IS NULL LIMIT ?'),
       artOwners: this.db.prepare('SELECT item_id FROM artwork WHERE url = ?'),
       count: this.db.prepare('SELECT COUNT(*) AS n FROM items'),
+      itemsOf: this.db.prepare('SELECT item_id FROM item_sources WHERE source_id = ?'),
+      dropSource: this.db.prepare('DELETE FROM item_sources WHERE source_id = ?'),
+      orphans: this.db.prepare('SELECT id FROM items WHERE NOT EXISTS (SELECT 1 FROM item_sources WHERE item_id = items.id)'),
+      dropItem: this.db.prepare('DELETE FROM items WHERE id = ?'),
+      dropArt: this.db.prepare('DELETE FROM artwork WHERE item_id = ?'),
     };
     this.seq = this.q.maxSeq.get().seq;
   }
@@ -113,5 +118,20 @@ export class Catalog {
     for (const r of this.q.artOwners.all(url)) { this.seq++; this.q.touch.run(this.seq, r.item_id); }
   }
   count() { return this.q.count.get().n; }
+  /** A source was removed: forget its links. Titles it alone provided go; titles another source
+   *  also has stay and are re-sent to the TV so their source list shrinks. Returns {removed, kept}. */
+  removeSource(sourceId) {
+    const touched = this.q.itemsOf.all(sourceId).map((r) => r.item_id);
+    const res = { removed: 0, kept: 0 };
+    this.db.exec('BEGIN');
+    try {
+      this.q.dropSource.run(sourceId);
+      const gone = new Set(this.q.orphans.all().map((r) => r.id));
+      for (const id of gone) { this.q.dropArt.run(id); this.q.dropItem.run(id); res.removed++; }
+      for (const id of touched) if (!gone.has(id)) { this.seq++; this.q.touch.run(this.seq, id); res.kept++; }
+      this.db.exec('COMMIT');
+    } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+    return res;
+  }
   close() { this.db.close(); }
 }

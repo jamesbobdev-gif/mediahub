@@ -34,3 +34,21 @@ test('re-ingesting unchanged items does not move the delta cursor', () => {
   assert.equal(c.since(head2).items[0].artwork[0].hash, 'abc');
   c.close();
 });
+
+test('removing a source drops the titles only it provided and re-sends shared ones', () => {
+  const c = new Catalog(':memory:');
+  c.upsertMany([
+    normaliseRecord({ title: 'Red Static (2018)', url: 'http://a/1', image: 'http://a/1.jpg' }, 'a'),
+    normaliseRecord({ title: 'Red Static (2018)', url: 'http://b/1' }, 'b'),
+    normaliseRecord({ title: 'Only On A (2019)', url: 'http://a/2' }, 'a'),
+  ]);
+  const head = c.seq;
+  assert.equal(c.count(), 2);
+  assert.deepEqual(c.removeSource('a'), { removed: 1, kept: 1 });
+  assert.equal(c.count(), 1);
+  const delta = c.since(head);
+  assert.equal(delta.items.length, 1);
+  assert.deepEqual(delta.items[0].sources.map((s) => s.sourceId), ['b']);
+  assert.deepEqual(c.removeSource('zzz'), { removed: 0, kept: 0 });
+  c.close();
+});
