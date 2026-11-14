@@ -45,6 +45,7 @@ export class Catalog {
       setArtHash: this.db.prepare('UPDATE artwork SET hash = ?, w = ?, h = ? WHERE url = ?'),
       maxSeq: this.db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM items'),
       since: this.db.prepare('SELECT * FROM items WHERE seq > ? ORDER BY seq LIMIT ?'),
+      all: this.db.prepare('SELECT * FROM items ORDER BY seq DESC LIMIT ?'),
       sourcesFor: this.db.prepare('SELECT source_id, item_url, seen_at, rank FROM item_sources WHERE item_id = ?'),
       artFor: this.db.prepare('SELECT url, hash, w, h FROM artwork WHERE item_id = ?'),
       pendingArt: this.db.prepare('SELECT url FROM artwork WHERE hash IS NULL LIMIT ?'),
@@ -111,14 +112,21 @@ export class Catalog {
   /** Delta since cursor. The TV passes its last cursor; unchanged catalog = empty items. */
   since(cursor = 0, limit = 500) {
     const rows = this.q.since.all(cursor, limit);
-    const items = rows.map((r) => ({
+    const items = rows.map((r) => this.shape(r));
+    return { cursor: rows.length ? rows[rows.length - 1].seq : cursor, head: this.seq, items };
+  }
+  /** One item as the TV and the control API see it: its links on each source and its posters. */
+  shape(r) {
+    return {
       id: r.id, kind: r.kind, title: r.title, year: r.year, season: r.season, episode: r.episode,
       sources: this.q.sourcesFor.all(r.id).map((s) => ({ sourceId: s.source_id, itemUrl: s.item_url, seenAt: s.seen_at, rank: s.rank })),
       artwork: this.q.artFor.all(r.id).map((a) => ({ url: a.url, hash: a.hash, w: a.w, h: a.h })),
       seq: r.seq,
-    }));
-    return { cursor: rows.length ? rows[rows.length - 1].seq : cursor, head: this.seq, items };
+    };
   }
+  get(id) { const r = this.q.byId.get(id); return r ? this.shape(r) : null; }
+  /** Every item, newest first, for a search over the whole catalog (a few thousand rows at most). */
+  all(limit = 50000) { return this.q.all.all(limit).map((r) => this.shape(r)); }
 
   pendingArtwork(limit = 50) { return this.q.pendingArt.all(limit).map((r) => r.url); }
   /** Artwork becoming available is a change the TV needs to see: bump the owning items. */

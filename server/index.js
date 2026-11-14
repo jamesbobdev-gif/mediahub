@@ -8,7 +8,9 @@ import { mkdirSync, watch } from 'node:fs';
 import { loadSources, reloadSources, patchSourceRules, addSource, removeSource, allowHost, setSourceFeed, setSourceFields } from './sources.js';
 import { discoverFeed } from './ingest/discover.js';
 import { loadFilters, compileFilters } from './filters.js';
-import { loadAccess, clientAllowed } from './access.js';
+import { loadAccess, clientAllowed, controlAllowed } from './access.js';
+import { TvRegistry, controlHelp } from './tv.js';
+import { search as searchTitles } from '../shell/js/search.js';
 import { readFileSync } from 'node:fs';
 import { createProxy } from './proxy.js';
 import { DEFAULT_MB as DEFAULT_CACHE_MB } from './cache.js';
@@ -36,6 +38,7 @@ const access = loadAccess(ACCESS_FILE);
 const CACHE_MB = process.env.HUB_CACHE_MB === undefined || process.env.HUB_CACHE_MB === '' ? DEFAULT_CACHE_MB : Number(process.env.HUB_CACHE_MB);
 const proxy = createProxy({ sources, filters, log, cacheMb: CACHE_MB });
 const trace = [];
+const tvs = new TvRegistry();   // the TVs and their command streams (server/tv.js, docs/CONTROL.md)
 const catalog = new Catalog(path.join(DATA, 'catalog.sqlite'));
 const artwork = new ArtworkStore({ dir: path.join(DATA, 'artwork'), budgetBytes: Number(process.env.HUB_ART_BUDGET || 2 * 1024 ** 3), log });
 await artwork.init();
@@ -146,6 +149,54 @@ async function route(req, res) {
     log('host allowed', id, r.site);
     return json(res, 200, { id, site: r.site, pattern: r.pattern, added: r.added, allowHosts: sources.get(id)?.allowHosts || [] });
   }
+  // ---- The TVs, and driving them from a local model or a script (server/tv.js, docs/CONTROL.md) ----
+  const ipOf = () => (req.socket.remoteAddress || '').replace('::ffff:', '');
+  const controlOk = () => controlAllowed(access, { header: req.headers.authorization, query: url.searchParams.get('token'), ip: req.socket.remoteAddress });
+  const denyControl = () => json(res, 401, { error: access.controlToken
+    ? 'send the control token: header "Authorization: Bearer <token>" (controlToken in config/access.json)'
+    : 'no control token is set, so only the hub machine may send commands: set controlToken in config/access.json (docs/CONTROL.md)' });
+  const publicItem = (it) => ({ id: it.id, kind: it.kind, title: it.title, year: it.year, season: it.season, episode: it.episode,
+    sources: it.sources.map((s) => ({ source: s.sourceId, url: s.itemUrl })), posters: it.artwork.map((a) => a.url) });
+  if (p === '/api/control') return json(res, 200, controlHelp({ host: hostnameOf(req), port: PORT, tokenSet: !!access.controlToken }));
+  if (p === '/api/tv' && req.method === 'GET') { if (!controlOk()) return denyControl(); return json(res, 200, tvs.list()); }
+  if (p === '/api/tv/hello' && req.method === 'POST') {
+    const body = await readJsonBody(req, 4096);
+    const id = tvs.hello({ id: body.id, name: body.name, platform: body.platform, ua: body.ua, ip: ipOf() });
+    log('tv hello', id, tvs.get(id).name, ipOf());
+    return json(res, 200, { id, name: tvs.get(id).name });
+  }
+  const tvMatch = p.match(/^\/api\/tv\/([a-z0-9]{6,32})(?:\/(events|state|ack|command))?$/i);
+  if (tvMatch) {
+    const [, id, what] = tvMatch;
+    if (!tvs.get(id)) return json(res, 404, { error: 'unknown TV: it has not said hello since the hub started; GET /api/tv lists the ones that have' });
+    if (what === 'events' && req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+      res.write(`event: hello\ndata: ${JSON.stringify({ id })}\n\n`);
+      tvs.attach(id, res);
+      const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch {} }, 25000);
+      req.on('close', () => { clearInterval(ping); tvs.detach(id, res); });
+      return;
+    }
+    if (what === 'state' && req.method === 'POST') { tvs.setState(id, await readJsonBody(req, 8192)); res.writeHead(204).end(); return; }
+    if (what === 'ack' && req.method === 'POST') { const body = await readJsonBody(req, 8192); tvs.ack(id, body.command, body.result || {}); res.writeHead(204).end(); return; }
+    if (what === 'command' && req.method === 'POST') {
+      if (!controlOk()) return denyControl();
+      const cmd = await readJsonBody(req, 4096);
+      const r = await tvs.send(id, cmd);
+      log('tv command', id, cmd && cmd.type, r.ok ? 'ok' : r.error);
+      return json(res, r.ok ? 200 : r.pending ? 202 : 400, r);
+    }
+    if (!what && req.method === 'GET') { if (!controlOk()) return denyControl(); return json(res, 200, tvs.get(id)); }
+  }
+  if (p === '/api/catalog/search') {
+    const q = String(url.searchParams.get('q') || '').slice(0, 80);
+    const limit = Math.max(1, Math.min(50, Number(url.searchParams.get('limit') || 10)));
+    const items = q ? searchTitles(catalog.all(), q, { limit }) : [];
+    return json(res, 200, { query: q, count: items.length, items: items.map(publicItem) });
+  }
+  const itemMatch = p.match(/^\/api\/catalog\/item\/([a-f0-9]{8,32})$/i);
+  if (itemMatch) { const it = catalog.get(itemMatch[1]); return it ? json(res, 200, publicItem(it)) : json(res, 404, { error: 'unknown title id' }); }
+
   if (p === '/api/catalog') {
     const since = Number(url.searchParams.get('since') || 0);
     const delta = catalog.since(since, Number(url.searchParams.get('limit') || 500));

@@ -7,6 +7,7 @@ import { PortalFrame } from './portal.js';
 import { progress, history } from './progress.js';
 import { search, KEY_ROWS } from './search.js';
 import { SettingsView } from './settings.js';
+import { startRemote } from './remote.js';
 
 const $ = (s) => document.querySelector(s);
 const views = { home: $('#view-home'), search: $('#view-search'), settings: $('#view-settings'), portal: $('#view-portal') };
@@ -26,7 +27,7 @@ const state = {
 
 const catalog = new CatalogCache();
 const art = new ArtworkLru();
-let portal, player, settings;
+let portal, player, settings, remote;
 const cursor = new VirtualCursor({ el: cursorEl, bounds: () => ({ w: innerWidth, h: innerHeight }) });
 // The page sees the cursor as a mouse (hover menus, player controls), a few times a second.
 let pointerSentAt = 0;
@@ -388,6 +389,64 @@ function trace(event, data = {}) {
 }
 function say(msg) { toast.textContent = msg; toast.hidden = !msg; clearTimeout(say.t); if (msg) say.t = setTimeout(() => { toast.hidden = true; }, 2500); }
 
+// ---------- driven from the hub (shell/js/remote.js, docs/CONTROL.md) ----------
+/** What this TV is showing, for a controller to read. */
+function remoteSnapshot() {
+  const s = player?.state || {};
+  const focusText = state.view !== 'portal' ? (state.focus?.el?.querySelector?.('.title')?.textContent || state.focus?.el?.textContent || '').trim().slice(0, 80) : null;
+  return {
+    view: state.view, source: state.portalSource, href: state.view === 'portal' ? portal?.href || null : null,
+    title: state.view === 'portal' ? state.playTitle || portal?.title || null : null,
+    query: state.view === 'search' ? state.query : undefined, focus: focusText || null, mode: state.mode,
+    playing: { active: !!s.active, paused: !!s.paused, t: Math.round(s.t || 0), d: Math.round(s.d || 0) },
+    sources: state.sources.length, titles: catalog.items.size,
+  };
+}
+const waitFor = (test, ms) => new Promise((resolve) => { const t0 = performance.now(); (function tick() { if (test()) return resolve(true); if (performance.now() - t0 > ms) return resolve(false); setTimeout(tick, 250); })(); });
+/** One command from the hub, carried out the way a key press would be. The answer is the controller's result. */
+async function runRemote(cmd) {
+  const sourceOf = (id) => state.sources.find((s) => s.id === id);
+  switch (cmd.type) {
+    case 'status': return { ok: true, state: remoteSnapshot() };
+    case 'say': say(String(cmd.text || '').slice(0, 120)); return { ok: true };
+    case 'home': showView('home'); return { ok: true };
+    case 'back': dispatch('back', { repeat: false, phase: 'down' }); return { ok: true, view: state.view };
+    case 'key': dispatch(cmd.intent, { repeat: false, phase: 'down' }); dispatch(cmd.intent, { repeat: false, phase: 'up' }); return { ok: true, view: state.view, focus: remoteSnapshot().focus };
+    case 'search': {
+      if (state.view !== 'search') openSearch();
+      setQuery(String(cmd.query || '').toLowerCase().slice(0, 40));
+      return { ok: true, results: search(visibleItems(), state.query, { limit: 10 }).map((it) => ({ id: it.id, title: it.title, year: it.year, kind: it.kind })) };
+    }
+    case 'open_source': {
+      const src = sourceOf(cmd.source); if (!src) return { ok: false, error: `unknown source "${cmd.source}"` };
+      history.add({ key: `source:${src.id}`, title: src.name, portalUrl: src.home, sourceId: src.id, kind: 'source' });
+      openPortal(src.home);
+      const up = await waitFor(() => portal.ready, 8000);
+      return { ok: true, opened: src.name, loaded: up };
+    }
+    case 'open_url': {
+      const src = sourceOf(cmd.source); if (!src) return { ok: false, error: `unknown source "${cmd.source}"` };
+      openPortal(`/p/${src.id}${cmd.path}`);
+      const up = await waitFor(() => portal.ready, 8000);
+      return { ok: true, opened: src.name, loaded: up };
+    }
+    case 'play': {
+      const it = catalog.items.get(cmd.item); if (!it) return { ok: false, error: 'unknown title id: find one with /api/catalog/search' };
+      openItem(it.id);
+      const started = await waitFor(() => player.active, 8000);
+      return { ok: true, title: it.title, started, note: started ? undefined : 'the page is open but the video has not started yet; read the TV state again in a few seconds' };
+    }
+    case 'pause': if (!player.active) return { ok: false, error: 'nothing is playing' }; if (!player.state.paused) player.togglePlay(); return { ok: true };
+    case 'resume': if (!player.active) return { ok: false, error: 'nothing is playing' }; if (player.state.paused) player.togglePlay(); return { ok: true };
+    case 'toggle_play':
+      if (player.active) { player.togglePlay(); return { ok: true }; }
+      if (state.view === 'portal') { startPlayback(); return { ok: true, started: await waitFor(() => player.active, 5000) }; }
+      return { ok: false, error: 'no page is open' };
+    case 'stop': if (player.active) stopPlayback(); else if (state.view === 'portal') leavePortal(); else return { ok: false, error: 'nothing to stop' }; return { ok: true, view: state.view };
+    default: return { ok: false, error: `unknown command "${cmd.type}"` };
+  }
+}
+
 // ---------- intent dispatch ----------
 function dispatch(intent, { repeat, phase }) {
   if (phase === 'up') {
@@ -461,6 +520,7 @@ async function boot() {
   state.sources = await fetch('/api/sources').then((r) => r.json());
   await catalog.init();
   showView('home');
+  remote = startRemote({ snapshot: remoteSnapshot, run: runRemote });
   try { const n = await catalog.sync(); if (n) { renderHome(); refreshFocus(); } } catch (e) { say(`Catalog sync failed: ${e.message}`); }
   setInterval(async () => { try { if (await catalog.sync() && state.view === 'home') { renderHome(); refreshFocus(); } } catch {} }, 60_000);
   addEventListener('resize', () => { portal.layout(); refreshFocus(); });
@@ -470,6 +530,6 @@ async function boot() {
   views.search.addEventListener('scroll', followScroll, { passive: true, capture: true });
   views.settings.addEventListener('scroll', followScroll, { passive: true, capture: true });
   for (const v of [views.home, views.search, views.settings]) v.addEventListener('click', (e) => { const t = e.target.closest('[data-focusable]'); if (!t) return; focusEl(t); state.view === 'home' ? homeSelect() : state.view === 'search' ? searchSelect() : settings.select(t); });
-  window.__app = { state, catalog, portal, player, dispatch, progress };
+  window.__app = { state, catalog, portal, player, dispatch, progress, remote };
 }
 boot();

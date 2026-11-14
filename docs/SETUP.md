@@ -232,6 +232,14 @@ app on the stick stops working, find the refused name there and allow it; nothin
 When the Pi is off the stick has no internet until it is back, which is also when the hub is off.
 A few apps carry their own fixed DNS and slip past this, which is why the switches above matter too.
 
+## Step 7. Let a local model drive the TV (optional)
+
+Anything on your network that can make a web request can list the TVs, search every source at once,
+and tell a TV to play, pause, open a site or go home, through the hub. A local AI model is the point
+of it: "play Fantastic Planet on the TV" becomes a few calls. It needs one thing set up here, a
+control token in `config/access.json`; without it the hub takes commands only from the Pi itself.
+The whole thing, with every command and a walkthrough, is in [CONTROL.md](CONTROL.md).
+
 ## Updating
 
 When the repository changes:

@@ -21,6 +21,10 @@ TV app shell (owns focus + remote)            Node hub (LAN box / NAS / Pi)
 **Setting this up at home on a Raspberry Pi and a TV?** Read [docs/SETUP.md](docs/SETUP.md). It has
 diagrams, a one-command Pi installer, how to lock the hub to your TV, and troubleshooting.
 
+**Want your own local AI model (or a script) to drive the TVs?** Read [docs/CONTROL.md](docs/CONTROL.md):
+the hub lists the TVs, searches every source at once, and forwards commands such as play, pause and
+open to a TV, behind a token. The hub describes it at `/api/control` too.
+
 ## Quick start
 
 ```bash
