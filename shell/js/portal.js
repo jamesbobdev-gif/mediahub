@@ -30,7 +30,7 @@ export class PortalFrame {
     clearInterval(this._hb);
     this._hb = setInterval(() => {
       if (!this.frame.src || this.frame.src === 'about:blank') return;
-      if (performance.now() - this.loadAt < 1500) return;          // still loading
+      if (performance.now() - this.loadAt < 5000) return;          // still loading: a heavy page gets a few seconds
       // A heavy page can hold its main thread for a few seconds on a TV; only a longer silence means it is gone.
       if (this.missed >= 4) { this.missed = 0; this.ready = false; this.onBlocked(); return; }
       this.missed++;
@@ -79,12 +79,13 @@ export class PortalFrame {
     this._onLoad = () => {
       // Every hub page announces itself once (hub:ready). Each load event consumes one announcement.
       // The two are separate tasks and can arrive in either order, so a load with no announcement
-      // waits briefly for a late one before concluding the frame is not on a hub page (refused by CSP).
+      // waits for a late one before concluding the frame is not on a hub page (refused by CSP). A
+      // heavy page on a TV can take seconds to run its first script, and some reload themselves once.
       if (this.frame.src === 'about:blank' || !this.frame.src) return;
       this.loadAt = performance.now();
       if (this.readyPending) { this.readyPending = false; return; }
       clearTimeout(this._blockTimer);
-      this._blockTimer = setTimeout(() => { this._blockTimer = null; this.ready = false; this.onBlocked(); }, 600);
+      this._blockTimer = setTimeout(() => { this._blockTimer = null; this.ready = false; this.onBlocked(); }, 4000);
     };
     this.frame.addEventListener('load', this._onLoad);
   }
