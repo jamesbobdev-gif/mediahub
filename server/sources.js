@@ -9,9 +9,33 @@ function prepare(s) {
   if (!s.id || !s.origin) throw new Error(`source missing id/origin: ${JSON.stringify(s)}`);
   s.originUrl = new URL(s.origin);
   s.rules = Object.assign({}, RULE_DEFAULTS, s.rules || {});
-  // Per-source exceptions to strict third-party blocking, e.g. the portal's CDN or API host.
-  s.allowHostsRe = (s.allowHosts || []).map((p) => new RegExp(p, 'i'));
+  // Per-source exceptions to strict third-party blocking, e.g. the portal's CDN or API host,
+  // plus the hosts that carry the site's own name (see ownHostPatterns).
+  s.allowHostsRe = [...(s.allowHosts || []).map((p) => new RegExp(p, 'i')), ...ownHostPatterns(s.originUrl.hostname)];
   return s;
+}
+
+const OWN_TLDS = 'com|net|org|io|tv|co|cc|app|dev|cdn|direct|me|us|uk|ca|de|fr|es|it|nl|se|jp|in|au|nz|ch|at|be|co\\.uk|com\\.au|co\\.nz';
+
+/** The name a site is known by: the first label of its site ("vimeo" for www.vimeo.com, "tubi" for
+ *  tubitv.com, a trailing "tv" dropped). Null for short names and address literals. */
+export function brandOf(host) {
+  const site = siteOf(host);
+  const label = site.split('.')[0];
+  if (!/^[a-z][a-z0-9]*$/.test(label)) return null;
+  const stem = label.length > 5 && label.endsWith('tv') ? label.slice(0, -2) : label;
+  return stem.length >= 4 ? stem : null;
+}
+
+/** A site's own hosts, allowed without being listed: the site itself, and a sibling site whose name
+ *  starts with the site's name (vimeo.com loads its app from vimeocdn.com, tubitv.com from tubi.io).
+ *  Ad and tracking hosts rarely carry the site's name, so this lifts strict blocking only where the
+ *  site's own code lives. Only letters and digits may follow the name, so vimeo-ads.example is out. */
+export function ownHostPatterns(host) {
+  const out = [new RegExp(hostPattern(siteOf(host)), 'i')];
+  const brand = brandOf(host);
+  if (brand) out.push(new RegExp(`(^|\\.)${brand}[a-z0-9]*\\.(${OWN_TLDS})$`, 'i'));
+  return out;
 }
 
 export function loadSources(path) {

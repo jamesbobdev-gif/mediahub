@@ -49,6 +49,20 @@ export function unscopeCookieHeader(header, source) {
   return out.join('; ');
 }
 
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+/** The named and numeric character references an attribute value can carry. */
+export function decodeEntities(s) {
+  if (!s || !s.includes('&')) return s;
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => {
+    if (e[0] === '#') {
+      const code = /^#x/i.test(e) ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      try { return String.fromCodePoint(code); } catch { return m; }
+    }
+    return ENTITIES[e.toLowerCase()] ?? m;
+  });
+}
+const escapeAttr = (s) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
 const BLOCKED_HOSTS_KEPT = 60;
 
 /** Remember a strict third-party block per source and host. Ad-list and ad-size blocks are not
@@ -134,23 +148,43 @@ export function createProxy({ sources, filters, log = () => {}, cacheMb = DEFAUL
     });
   }
 
+  /** Script URLs written out in full inside JavaScript or JSON ("https://cdn/player.module.js", also
+   *  with JSON's escaped slashes). A module a page loads with import(url) cannot be routed at run
+   *  time the way fetch and script.src are, so the address is routed in the text instead. */
+  function rewriteJsUrls(text, source) {
+    return text.replace(/(["'])(https?:(?:\/\/|\\\/\\\/)(?:[^"'\s<>\\]|\\\/)+?\.m?js(?:\?(?:[^"'\s<>\\]|\\\/)*)?)\1/g, (m, q, raw) => {
+      const escaped = raw.includes('\\/');
+      const url = escaped ? raw.replace(/\\\//g, '/') : raw;
+      const routed = hubUrlFor(url, source);
+      if (routed === url) return m;
+      return `${q}${escaped ? routed.replace(/\//g, '\\/') : routed}${q}`;
+    });
+  }
+
   function rewriteHtml(html, source, pageUrl, shellOrigin = '') {
     const rules = source.rules;
+    // Attribute values arrive HTML-escaped ("?a=1&amp;b=2"): decode before resolving, so the
+    // upstream URL gets "&" and not a parameter named "amp;b", and escape again on the way out.
     const attr = /(\s(?:src|href|action|poster|data-src|data-lazy-src))=(["'])([^"']*)\2/gi;
-    html = html.replace(attr, (m, name, q, val) => {
+    html = html.replace(attr, (m, name, q, raw) => {
+      const val = decodeEntities(raw);
       if (!val || val.startsWith('#') || /^(javascript|data|blob|mailto):/i.test(val)) return m;
       let abs;
       try { abs = new URL(val, pageUrl).href; } catch { return m; }
-      return `${name}=${q}${hubUrlFor(abs, source)}${q}`;
+      return `${name}=${q}${escapeAttr(hubUrlFor(abs, source))}${q}`;
     });
-    html = html.replace(/(\ssrcset=)(["'])([^"']*)\2/gi, (m, name, q, val) => {
-      const out = val.split(',').map((part) => {
+    html = html.replace(/(\ssrcset=)(["'])([^"']*)\2/gi, (m, name, q, raw) => {
+      const out = decodeEntities(raw).split(',').map((part) => {
         const [u, d] = part.trim().split(/\s+/);
         try { return [hubUrlFor(new URL(u, pageUrl).href, source), d].filter(Boolean).join(' '); } catch { return part; }
       }).join(', ');
-      return `${name}${q}${out}${q}`;
+      return `${name}${q}${escapeAttr(out)}${q}`;
     });
-    html = rewriteCssUrls(html, source, pageUrl);
+    // CSS url() only where CSS lives: <style> blocks and style attributes. Scripts are left alone
+    // (a page's own "new URL(x)" is not a stylesheet, and rewriting it broke the script).
+    html = html.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi, (m, open, css, close) => open + rewriteCssUrls(css, source, pageUrl) + close);
+    html = html.replace(/(\sstyle=)(["'])([^"']*)\2/gi, (m, name, q, raw) => `${name}${q}${escapeAttr(rewriteCssUrls(decodeEntities(raw), source, pageUrl))}${q}`);
+    html = html.replace(/(<script\b(?![^>]*\bsrc=)[^>]*>)([\s\S]*?)(<\/script>)/gi, (m, open, js, close) => open + rewriteJsUrls(js, source) + close);
     // Force the desktop layout width the portal was designed for; the shell scales the frame.
     html = html.replace(/<meta[^>]+name=["']viewport["'][^>]*>/gi, '');
     html = html.replace(/<base\s[^>]*>/gi, '');
@@ -312,20 +346,23 @@ export function createProxy({ sources, filters, log = () => {}, cacheMb = DEFAUL
       cache.set(upstream.href, { status: up.status, headers, body, ttl: policy.ttl, sourceId: perSource ? source.id : undefined });
     };
 
-    if (isHtml || isCss || hls || dash) {
+    const isJs = !isHtml && /javascript|ecmascript/.test(ctype);
+    if (isHtml || isCss || isJs || hls || dash) {
       const text = await up.text();
       const rewritten = isHtml ? rewriteHtml(text, source, upstream.href, req.hubShellOrigin)
         : isCss ? rewriteCssUrls(text, source, upstream.href)
+        : isJs ? rewriteJsUrls(text, source)
         : hls ? rewriteM3u8(text, source, upstream.href)
         : rewriteMpd(text, source, upstream.href);
       out['content-type'] = hls ? 'application/vnd.apple.mpegurl' : dash ? 'application/dash+xml' : ctype;
       if (!policy.ok) out['cache-control'] = 'no-store';
-      if (isCss) keep(Buffer.from(rewritten), true);
+      if (isCss || isJs) keep(Buffer.from(rewritten), true);       // rewritten per source
       if (isHtml) {
         // Everything the page loads must come from the hub origin (all URLs are rewritten to it, and
         // the content script rewrites script-made requests). Direct loads from any other host are refused.
         // Only the shell may frame portal pages; portal pages are on their own origin and cannot touch the shell.
-        const ancestors = req.hubShellOrigin ? `frame-ancestors ${req.hubShellOrigin}; ` : '';
+        // 'self' too: a portal page may embed another hub page (a site's player lives in an iframe).
+        const ancestors = req.hubShellOrigin ? `frame-ancestors ${req.hubShellOrigin} 'self'; ` : '';
         out['content-security-policy'] = `${ancestors}default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; frame-src 'self'; form-action 'self'; base-uri 'none'; object-src 'none'`;
       }
       res.writeHead(up.status, out);

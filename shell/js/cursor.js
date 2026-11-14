@@ -6,6 +6,7 @@ export class VirtualCursor {
     this.el = el; this.bounds = bounds;
     this.x = 200; this.y = 200; this.vx = 0; this.vy = 0; this.held = new Set(); this.raf = null;
     this.accel = 2400; this.maxV = 1800; this.lastT = 0;
+    this.onMove = () => {};          // called after each movement, so the page can see the pointer
   }
   show() { this.el.hidden = false; this.render(); }
   hide() { this.el.hidden = true; this.stop(); }
@@ -20,8 +21,11 @@ export class VirtualCursor {
     this.vy = clamp(this.vy + ay * this.accel * dt, -this.maxV, this.maxV);
     if (!ax) this.vx *= 0.6; if (!ay) this.vy *= 0.6;
     const b = this.bounds();
-    this.x = clamp(this.x + this.vx * dt, 0, b.w); this.y = clamp(this.y + this.vy * dt, 0, b.h);
+    const x = clamp(this.x + this.vx * dt, 0, b.w), y = clamp(this.y + this.vy * dt, 0, b.h);
+    if (x === this.x && y === this.y) return;
+    this.x = x; this.y = y;
     this.render();
+    this.onMove(x, y);
   }
   render() { this.el.style.transform = `translate(${this.x}px, ${this.y}px)`; }
 }

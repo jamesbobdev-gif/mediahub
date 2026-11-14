@@ -104,3 +104,50 @@ test('a page on an https portal asking for plain http gets https, and bare paths
   assert.equal(bare.firstParty, true);
   assert.equal(proxy.resolve({ url: '/oz/auth', headers: {} }), null);
 });
+
+test('attribute URLs are HTML-decoded before routing: &amp; becomes & upstream, never a parameter named amp;', () => {
+  const out = proxy.rewriteHtml('<html><head></head><body><iframe src="https://player.test/video/1?h=abc&amp;badge=0"></iframe><a href="/app/list?a=1&amp;b=2">x</a></body></html>', sources.get('demo'), 'https://portal.test/app/index.html');
+  assert.match(out, /src="\/x\/demo\/https%3A%2F%2Fplayer\.test%2Fvideo%2F1%3Fh%3Dabc%26badge%3D0"/);
+  assert.doesNotMatch(out, /%26amp%3B/);
+  assert.match(out, /href="\/p\/demo\/list\?a=1&amp;b=2"/);
+});
+
+test('css url() is rewritten in style blocks and style attributes, and left alone inside scripts', () => {
+  const html = '<html><head><style>.a{background:url(bg.png)}</style><script>function f(qs){return new URL(qs, base)} var u = url(x)</script></head><body><div style="background:url(&quot;i.png&quot;)"></div></body></html>';
+  const out = proxy.rewriteHtml(html, sources.get('demo'), 'https://portal.test/app/index.html');
+  assert.match(out, /<style>\.a\{background:url\(\/p\/demo\/bg\.png\)\}<\/style>/);
+  assert.match(out, /style="background:url\(&quot;\/p\/demo\/i\.png&quot;\)"/);
+  assert.match(out, /return new URL\(qs, base\)\} var u = url\(x\)/);
+});
+
+test('a portal page may be framed by the shell and by another hub page (an embedded player)', async () => {
+  const p = createProxy({ sources, filters: compileFilters({}), cacheMb: 0 });
+  const real = globalThis.fetch;
+  globalThis.fetch = async () => new Response('<html><head></head><body></body></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+  try {
+    const res = { writeHead(s, h) { this.status = s; this.headers = h; return this; }, end() {}, destroy() {}, on() { return this; } };
+    await p.handle({ url: '/p/demo/', method: 'GET', headers: { accept: 'text/html' }, hubShellOrigin: 'http://tv:8787' }, res);
+    assert.match(res.headers['content-security-policy'], /^frame-ancestors http:\/\/tv:8787 'self'; /);
+  } finally { globalThis.fetch = real; }
+});
+
+test('script addresses written out in full inside inline scripts are routed, so import(url) stays inside the hub', () => {
+  const html = '<html><head><script>window.cfg={"js_module":"https://cdn.test/p/1/player.module.js","api":"https://api.test/v1","escaped":"https:\\/\\/cdn.test\\/v.js"};import(cfg.js_module)</script><script src="https://cdn.test/a.js"></script></head><body></body></html>';
+  const out = proxy.rewriteHtml(html, sources.get('demo'), 'https://portal.test/app/index.html');
+  assert.match(out, /"js_module":"\/x\/demo\/https%3A%2F%2Fcdn\.test%2Fp%2F1%2Fplayer\.module\.js"/);
+  assert.match(out, /"api":"https:\/\/api\.test\/v1"/, 'a plain address stays as it is');
+  assert.ok(out.includes('"escaped":"\\/x\\/demo\\/https%3A%2F%2Fcdn.test%2Fv.js"'), 'JSON escaping is kept: ' + out);
+  assert.match(out, /<script src="\/x\/demo\/https%3A%2F%2Fcdn\.test%2Fa\.js">/);
+});
+
+test('a proxied script has its full script addresses routed too, and is kept per source', async () => {
+  const p = createProxy({ sources, filters: compileFilters({}), cacheMb: 1 });
+  const real = globalThis.fetch;
+  globalThis.fetch = async () => new Response('const m = "https://portal.test/app/chunk.js"; import(m);', { status: 200, headers: { 'content-type': 'application/javascript' } });
+  try {
+    const res = { chunks: [], writeHead(s, h) { this.status = s; this.headers = h; return this; }, end(b) { if (b) this.chunks.push(Buffer.from(b)); }, destroy() {}, on() { return this; } };
+    await p.handle({ url: '/p/demo/main.js', method: 'GET', headers: {} }, res);
+    assert.equal(Buffer.concat(res.chunks).toString(), 'const m = "/p/demo/chunk.js"; import(m);');
+    assert.equal(p.cache.stats.entries, 1);
+  } finally { globalThis.fetch = real; }
+});

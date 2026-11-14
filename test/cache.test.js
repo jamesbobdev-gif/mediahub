@@ -169,7 +169,7 @@ test('a response that sets a cookie is not kept', async () => {
   await withFetch({ [url]: () => new Response('x', { status: 200, headers: { 'content-type': 'text/javascript', 'set-cookie': 'sid=1; Path=/' } }) }, async (calls) => {
     const a = fakeRes(); await proxy.handle(req('/p/demo/a.js'), a);
     assert.deepEqual(a.headers['set-cookie'], ['s_demo__sid=1; Path=/']);
-    assert.equal(a.headers['cache-control'], undefined);
+    assert.equal(a.headers['cache-control'], 'no-store', 'a script that is not kept is not for the TV to keep either');
     const b = fakeRes(); await proxy.handle(req('/p/demo/a.js'), b);
     assert.equal(b.headers['x-hub-cache'], 'miss');
     assert.equal(calls.length, 2);

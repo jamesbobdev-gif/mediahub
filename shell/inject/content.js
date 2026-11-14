@@ -24,7 +24,16 @@
   const REMOVE = RULES.removeOnMount.join(',') || null;
   const AD_RATIOS = [[300, 250], [728, 90], [320, 50], [160, 600], [970, 250], [300, 600], [336, 280]];
   const decisions = [];
-  const send = (msg) => { try { parent.postMessage(msg, SHELL || '*'); } catch {} };
+  // A site's player often lives in an embedded frame, itself a hub page with this script. Only the
+  // top page talks to the shell; a nested frame talks to its parent page, which relays.
+  // Nested means the parent is a hub page too (same origin, readable); the shell's window is not.
+  const NESTED = (() => { try { return window.parent !== window && window.parent.location.origin === location.origin; } catch { return false; } })();
+  const send = (msg) => {
+    try {
+      if (!NESTED) parent.postMessage(msg, SHELL || '*');
+      else parent.postMessage(Object.assign({}, msg, { hubFrame: true }), location.origin);
+    } catch {}
+  };
 
   // ---- 1. Commit the portal to its desktop layout ------------------------------
   if (!RULES.touch) {
@@ -56,6 +65,25 @@
     if (PORTAL_ORIGIN && u.origin === PORTAL_ORIGIN) return `/p/${SOURCE}${u.pathname}${u.search}${u.hash}`;
     return `/x/${SOURCE}/${encodeURIComponent(u.href)}`;
   }
+  /** The address a page wrote, back from the hub's routed form: what the page reads from src/href
+   *  must look like what it set, or its own checks fail (Vimeo's player code refuses an iframe
+   *  whose src is not a vimeo.com address). */
+  function fromHub(value) {
+    const s = String(value);
+    if (!HUB_PATHS.test(s) && !s.includes('/x/') && !s.includes('/p/')) return value;
+    let u;
+    try { u = new URL(s, location.href); } catch { return value; }
+    if (u.origin !== location.origin) return value;
+    let m = u.pathname.match(/^\/x\/[^/]+\/(.+)$/);
+    if (m) { try { return decodeURIComponent(m[1]) + u.search + u.hash; } catch { return value; } }
+    m = u.pathname.match(/^\/p\/[^/]+(\/.*)?$/);
+    if (m && PORTAL_ORIGIN) return PORTAL_ORIGIN + (m[1] || '/') + u.search + u.hash;
+    return value;
+  }
+  const toHubSrcset = (v) => String(v).split(',').map((part) => {
+    const [u, d] = part.trim().split(/\s+/);
+    return u ? [toHub(u), d].filter(Boolean).join(' ') : part;
+  }).join(', ');
   const realFetch = window.fetch;
   window.fetch = function (input, init) {
     if (typeof input === 'string' || input instanceof URL) return realFetch.call(window, toHub(String(input)), init);
@@ -68,13 +96,27 @@
                               [HTMLMediaElement, 'src'], [HTMLLinkElement, 'href'], [HTMLEmbedElement, 'src']]) {
     const d = Object.getOwnPropertyDescriptor(Ctor.prototype, prop);
     if (!d || !d.set) continue;
-    Object.defineProperty(Ctor.prototype, prop, { get: d.get, set(v) { d.set.call(this, toHub(String(v))); }, configurable: true });
+    Object.defineProperty(Ctor.prototype, prop, { get() { return fromHub(d.get.call(this)); }, set(v) { d.set.call(this, toHub(String(v))); }, configurable: true });
+  }
+  for (const Ctor of [HTMLImageElement, HTMLSourceElement]) {
+    const d = Object.getOwnPropertyDescriptor(Ctor.prototype, 'srcset');
+    if (!d || !d.set) continue;
+    Object.defineProperty(Ctor.prototype, 'srcset', { get: d.get, set(v) { d.set.call(this, toHubSrcset(v)); }, configurable: true });
   }
   const realSetAttribute = Element.prototype.setAttribute;
   Element.prototype.setAttribute = function (name, value) {
     const n = String(name).toLowerCase();
-    if ((n === 'src' || n === 'href' || n === 'data-src') && /^(https?:)?\/\//i.test(String(value))) value = toHub(String(value));
+    if ((n === 'src' || n === 'href' || n === 'data-src' || n === 'poster') && /^(https?:)?\/\//i.test(String(value))) value = toHub(String(value));
+    else if (n === 'srcset' || n === 'data-srcset') value = toHubSrcset(value);
     return realSetAttribute.call(this, name, value);
+  };
+  const realGetAttribute = Element.prototype.getAttribute;
+  const rawAttribute = (el, name) => realGetAttribute.call(el, name);
+  Element.prototype.getAttribute = function (name) {
+    const v = realGetAttribute.call(this, name);
+    if (v == null || this.tagName === 'A') return v;                // links stay as routed
+    const n = String(name).toLowerCase();
+    return (n === 'src' || n === 'href' || n === 'data-src' || n === 'poster') ? fromHub(v) : v;
   };
 
   // ---- 3. Popup, pop-under and redirect suppression -----------------------------
@@ -320,16 +362,63 @@
     pushScheduled = true;
     requestAnimationFrame(() => { pushScheduled = false; if (dirty) pushCandidates(); });
   }
-  function activate(el) {
+  /** Click an element the way a mouse would, at the given point (the cursor) or at its centre. */
+  function activate(el, px, py) {
     const r = el.getBoundingClientRect();
-    const x = r.left + r.width / 2, y = r.top + r.height / 2;
-    const common = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
+    const x = px ?? r.left + r.width / 2, y = py ?? r.top + r.height / 2;
+    hoverAt(x, y, el);
+    const common = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, view: window };
     for (const [Ctor, type] of [[PointerEvent, 'pointerdown'], [MouseEvent, 'mousedown'], [PointerEvent, 'pointerup'], [MouseEvent, 'mouseup']]) {
-      try { el.dispatchEvent(new Ctor(type, { ...common, pointerId: 1, isPrimary: true, button: 0 })); } catch {}
+      try { el.dispatchEvent(new Ctor(type, { ...common, pointerId: 1, isPrimary: true, button: 0, buttons: type.endsWith('down') ? 1 : 0 })); } catch {}
     }
     if (el.matches('input,select,textarea')) { el.focus(); return; }
-    el.click();
+    try { el.dispatchEvent(new MouseEvent('click', { ...common, button: 0, detail: 1 })); } catch { el.click(); }
     setTimeout(markDirty, 150);
+  }
+
+  // ---- 6b. The shell's cursor, as a mouse the page can see -------------------------
+  // Hover menus and player controls appear on mouse movement; the virtual cursor sends its
+  // position and the page gets pointer events as if a mouse had moved there.
+  let hovered = null;
+  function hoverAt(x, y, el = deepElementFromPoint(x, y)) {
+    if (!el) return;
+    const common = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, view: window, pointerId: 1, isPrimary: true, pointerType: 'mouse' };
+    const fire = (target, Ctor, type, extra = {}) => { try { target.dispatchEvent(new Ctor(type, { ...common, ...extra })); } catch {} };
+    if (el !== hovered) {
+      if (hovered && hovered.isConnected) {
+        fire(hovered, PointerEvent, 'pointerout', { relatedTarget: el }); fire(hovered, MouseEvent, 'mouseout', { relatedTarget: el });
+        fire(hovered, PointerEvent, 'pointerleave', { bubbles: false, relatedTarget: el }); fire(hovered, MouseEvent, 'mouseleave', { bubbles: false, relatedTarget: el });
+      }
+      fire(el, PointerEvent, 'pointerover', { relatedTarget: hovered }); fire(el, MouseEvent, 'mouseover', { relatedTarget: hovered });
+      fire(el, PointerEvent, 'pointerenter', { bubbles: false, relatedTarget: hovered }); fire(el, MouseEvent, 'mouseenter', { bubbles: false, relatedTarget: hovered });
+      hovered = el;
+    }
+    fire(el, PointerEvent, 'pointermove'); fire(el, MouseEvent, 'mousemove');
+  }
+  /** A same-origin embedded frame under the point (a site's player): the window to pass the shell's command to. */
+  function frameAt(el) {
+    if (!el || el.tagName !== 'IFRAME' || !el.contentWindow) return null;
+    try { if (new URL(rawAttribute(el, 'src') || '', location.href).origin !== location.origin) return null; } catch { return null; }
+    return el;
+  }
+  const intoFrame = (frame, m, x, y) => {
+    const r = frame.getBoundingClientRect();
+    try { frame.contentWindow.postMessage(Object.assign({}, m, { x: x - r.left, y: y - r.top, hubParent: true }), location.origin); } catch {}
+  };
+  // The nested frame whose player is running, enlarged to fill this page while it plays.
+  let playerFrame = null, playerFrameStyle = '';
+  function frameOf(win) { return queryAll('iframe').find((f) => f.contentWindow === win) || null; }
+  function framePlayback(win, active) {
+    if (active) {
+      const f = frameOf(win); if (!f) return;
+      if (playerFrame && playerFrame !== f) framePlayback(playerFrame.contentWindow, false);
+      if (playerFrame !== f) { playerFrame = f; playerFrameStyle = f.style.cssText; f.style.cssText += ';position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;z-index:2147483646;background:#000;'; }
+      document.documentElement.classList.add('hub-playback');
+    } else if (playerFrame && (!win || playerFrame.contentWindow === win)) {
+      playerFrame.style.cssText = playerFrameStyle; playerFrame = null;
+      document.documentElement.classList.remove('hub-playback');
+      markDirty();
+    }
   }
   function scrollIntoAnchor(el) {
     const r = el.getBoundingClientRect();
@@ -440,27 +529,62 @@
     },
   };
 
+  // In an embedded frame, a video that starts playing is the site's player (an embedded player
+  // frame has nothing else in it): take it over, so the remote's transport keys work and the
+  // frame fills the TV. Top-level pages keep their decorative autoplay clips.
+  if (NESTED) {
+    document.addEventListener('playing', (e) => {
+      const v = e.target;
+      if (!(v instanceof HTMLVideoElement) || player.active) return;
+      const r = v.getBoundingClientRect();
+      if (r.width * r.height < innerWidth * innerHeight * 0.3) return;
+      player.attach(v, {});
+    }, true);
+  }
+
   // ---- 8. Commands from the shell ----------------------------------------------
   window.addEventListener('message', (e) => {
-    if (SHELL && e.origin !== SHELL) return;
     const m = e.data || {};
+    // From an embedded hub frame (a site's player): relay what the shell needs, and when its player
+    // runs, make the frame fill this page.
+    if (m.hubFrame && e.origin === location.origin && e.source && e.source !== window) {
+      const msg = Object.assign({}, m); delete msg.hubFrame;
+      if (msg.type === 'hub:player') { framePlayback(e.source, !!msg.active); send(msg); }
+      else if (['hub:hidden', 'hub:nothing', 'hub:noplayer'].includes(msg.type)) send(msg);
+      return;
+    }
+    const fromShell = e.source === parent && (!SHELL || e.origin === SHELL);
+    const fromParent = NESTED && m.hubParent && e.source === parent && e.origin === location.origin;
+    if (!fromShell && !fromParent) return;
     switch (m.type) {
       case 'hub:ping': send({ type: 'hub:pong', n: m.n }); break;
       case 'hub:candidates': pushCandidates(); break;
       case 'hub:activate': { const el = elOf(m.id); if (!el) break; if (el.tagName === 'VIDEO') player.attach(el, m); else activate(el); break; }
       case 'hub:anchor': { const el = elOf(m.id); if (el) scrollIntoAnchor(el); break; }
       case 'hub:scrollBy': (scrollRoot || window).scrollBy({ top: m.dy }); markDirty(); break;
+      case 'hub:pointer': { const el = deepElementFromPoint(m.x, m.y); const f = frameAt(el); if (f) intoFrame(f, m, m.x, m.y); else hoverAt(m.x, m.y, el); break; }
       case 'hub:elementAt': {
         const el = deepElementFromPoint(m.x, m.y); if (!el) { send({ type: 'hub:nothing' }); break; }
+        const f = frameAt(el);
+        if (f && m.then !== 'hide') { intoFrame(f, m, m.x, m.y); break; }
         if (m.then === 'hide') send({ type: 'hub:hidden', selector: hideUser(el) });
         else if (el.tagName === 'VIDEO' || el.closest('video')) player.attach(el.closest('video') || el, m);
-        else activate(el);
+        else activate(el, m.x, m.y);
         break;
       }
       case 'hub:hide': { const el = elOf(m.id); if (el) send({ type: 'hub:hidden', selector: hideUser(el) }); break; }
-      case 'hub:play': { const v = (m.id && elOf(m.id)) || queryAll(RULES.player)[0] || queryAll('video')[0]; if (v) player.attach(v, m); else send({ type: 'hub:noplayer' }); break; }
+      case 'hub:play': {
+        const v = (m.id && elOf(m.id)) || queryAll(RULES.player)[0] || queryAll('video')[0];
+        if (v) player.attach(v, m);
+        else if (playerFrame) intoFrame(playerFrame, m, 0, 0);
+        else send({ type: 'hub:noplayer' });
+        break;
+      }
       case 'hub:autoplay': autoplay(m); break;
-      case 'hub:player': if (typeof player[m.cmd] === 'function') player[m.cmd](...(m.args || [])); break;
+      case 'hub:player':
+        if (player.active) { if (typeof player[m.cmd] === 'function') player[m.cmd](...(m.args || [])); }
+        else if (playerFrame) intoFrame(playerFrame, m, 0, 0);     // the running player is in an embedded frame
+        break;
       case 'hub:decisions': send({ type: 'hub:decisions', total: decisions.length, hidden: decisions.filter((d) => d.kind === 'hide').length, recent: decisions.slice(-8) }); break;
       case 'hub:back': history.back(); break;
       case 'hub:navigate': if (typeof m.path === 'string' && m.path.startsWith('/p/')) location.href = m.path; break;

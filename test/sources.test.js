@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { sourceIdFor, siteOf, hostPattern, parseAddress, addSource, removeSource, allowHost, patchSourceRules, loadSources } from '../server/sources.js';
+import { sourceIdFor, siteOf, hostPattern, parseAddress, addSource, removeSource, allowHost, patchSourceRules, loadSources, ownHostPatterns, brandOf } from '../server/sources.js';
 
 function tempFile(list) {
   const file = path.join(mkdtempSync(path.join(tmpdir(), 'hub-sources-')), 'sources.json');
@@ -86,4 +86,21 @@ test('a rules patch merges lists and sets scalars', () => {
   const rules = patchSourceRules(file, 'a', { css: ['.y', '.x'], dark: true, bogus: 1 });
   assert.deepEqual(rules, { css: ['.x', '.y'], dark: true });
   assert.deepEqual(read(file)[0].rules, { css: ['.x', '.y'], dark: true });
+});
+
+test("a site's own hosts are allowed without being listed: the site, and a sibling carrying its name", () => {
+  const allowed = (origin, host) => ownHostPatterns(new URL(origin).hostname).some((re) => re.test(host));
+  assert.ok(allowed('https://vimeo.com', 'f.vimeocdn.com'));
+  assert.ok(allowed('https://www.vimeo.com', 'player.vimeo.com'));
+  assert.ok(allowed('https://tubitv.com', 'abproxy.production-public.tubi.io'));
+  assert.ok(allowed('https://watch.plex.tv', 'x.plex.direct'));
+  assert.equal(allowed('https://vimeo.com', 'vimeo.evil.com'), false, 'the name must be the site itself');
+  assert.equal(allowed('https://vimeo.com', 'vimeo-ads.com'), false, 'only letters and digits may follow the name');
+  assert.equal(allowed('https://vimeo.com', 'ads.doubleclick.net'), false);
+  assert.equal(allowed('https://pbs.org', 'pbskids.org'), false, 'a three-letter name is too short to trust');
+  assert.equal(allowed('http://192.168.1.5:8080', '192.168.1.50'), false);
+  assert.ok(allowed('http://192.168.1.5:8080', '192.168.1.5'));
+  assert.equal(brandOf('tubitv.com'), 'tubi'); assert.equal(brandOf('pluto.tv'), 'pluto'); assert.equal(brandOf('app.roku.com'), 'roku'); assert.equal(brandOf('pbs.org'), null);
+  const s = loadSources(tempFile([{ id: 'v', origin: 'https://vimeo.com', home: '/' }])).get('v');
+  assert.ok(s.allowHostsRe.some((re) => re.test('f.vimeocdn.com')));
 });

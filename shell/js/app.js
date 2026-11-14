@@ -28,6 +28,15 @@ const catalog = new CatalogCache();
 const art = new ArtworkLru();
 let portal, player, settings;
 const cursor = new VirtualCursor({ el: cursorEl, bounds: () => ({ w: innerWidth, h: innerHeight }) });
+// The page sees the cursor as a mouse (hover menus, player controls), a few times a second.
+let pointerSentAt = 0;
+cursor.onMove = (x, y) => {
+  const now = performance.now();
+  if (state.view !== 'portal' || !portal?.ready || now - pointerSentAt < 50) return;
+  pointerSentAt = now;
+  const p = portal.toFrame(x, y);
+  portal.send({ type: 'hub:pointer', x: p.x, y: p.y });
+};
 
 // ---------- focus ring ----------
 function setFocus(c, { scroll = true } = {}) {

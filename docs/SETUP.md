@@ -279,7 +279,12 @@ router gave it a new one. Fix the file or reserve the TV's address.
 **Page loads but a portal shows blank or missing player.** Strict mode blocked a script the
 portal needs (its player CDN, for example). On the TV, open Settings, focus the source and allow
 the host under "Blocked for this source". By hand: open `/api/status`, find the host under
-`third-party-script:…`, and add it to that source's `allowHosts`.
+`third-party-script:…`, and add it to that source's `allowHosts`. Hosts that carry the site's own
+name (vimeocdn.com for vimeo.com, tubi.io for tubitv.com) are allowed without being listed.
+
+**Buttons on a site do nothing, in cursor mode too.** Usually the same cause: the site's own
+scripts were blocked, so the page is a picture of itself. Check "Blocked for this source" in
+Settings for the site's script host and allow it.
 
 **A source added from the TV has no titles on the home screen.** The finder found no list on
 that site (no structured data, RSS feed or video sitemap). The source still opens from its card.
