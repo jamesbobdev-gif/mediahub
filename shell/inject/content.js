@@ -152,21 +152,25 @@
   function labelOf(el) {
     return (el.getAttribute('aria-label') || el.getAttribute('title') || (el.textContent || '').slice(0, 200)).replace(/\s+/g, ' ').trim().slice(0, 60);
   }
+  /** The page's own play control for the title it shows: the first one in the page that says so,
+   *  skipping controls that sit inside a link to some other page (a tile's play overlay). */
   function findPlayControl() {
-    let best = null, bestArea = 0;
+    let hinted = null;
     for (const el of queryAll(FOCUSABLE + ',[class*="play" i],[data-testid*="play" i],[id*="play" i]')) {
       if (el.tagName === 'VIDEO' || el.closest('.hub-hidden,.hub-placeholder')) continue;
       const r = el.getBoundingClientRect();
       if (!visible(el, r) || r.width > innerWidth * 0.9) continue;
+      const link = el.closest('a[href]');
+      if (link && link !== el) {
+        const to = link.getAttribute('href') || '';
+        try { if (to && !/^(#|javascript:)/i.test(to) && new URL(to, location.href).pathname !== location.pathname) continue; } catch {}
+      }
       const label = labelOf(el);
-      if (/trailer|preview|playlist|player/i.test(label)) continue;
-      const named = PLAY_WORDS.test(label);
-      const hinted = !label && PLAY_HINT.test(`${el.className} ${el.id} ${el.getAttribute('data-testid') || ''}`);
-      if (!named && !hinted) continue;
-      const area = r.width * r.height * (named ? 2 : 1);
-      if (area > bestArea) { bestArea = area; best = el; }
+      if (label.length > 30 || /trailer|preview|playlist|player/i.test(label)) continue;   // a tile's text, not a control
+      if (PLAY_WORDS.test(label)) return el;
+      if (!hinted && !label && PLAY_HINT.test(`${el.className} ${el.id} ${el.getAttribute('data-testid') || ''}`)) hinted = el;
     }
-    return best;
+    return hinted;
   }
   function autoplay(m) {
     const deadline = Date.now() + 20000;
@@ -581,6 +585,33 @@
         break;
       }
       case 'hub:autoplay': autoplay(m); break;
+      // Move to another page of this site inside its app, the way a click on one of its own links
+      // would, without a new document: some sites only build a title page properly this way.
+      case 'hub:go': {
+        const p = String(m.path || '');
+        if (!p.startsWith('/')) break;
+        const real = p.startsWith(PREFIX) ? p.slice(PREFIX.length) || '/' : p;
+        const was = document.title, t0 = Date.now();
+        try { history.pushState({}, '', real); dispatchEvent(new PopStateEvent('popstate', { state: {} })); } catch {}
+        markDirty();
+        // Then start the title, but only once the app has drawn it: the address is the title's and
+        // the page title has changed. An app still booting may have missed the first nudge, so it
+        // is repeated; if the title never appears, nothing is pressed (the wrong film is worse than none).
+        if (m.then === 'autoplay') {
+          const target = real.split('?')[0];
+          const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+          const want = norm(m.title).slice(0, 16);
+          // The chosen title's name in the page title says the app has drawn that page, not the one before.
+          const drawn = () => location.pathname === target && (want ? norm(document.title).includes(want) : document.title !== was);
+          let tries = 0;
+          const wait = setInterval(() => {
+            if (drawn()) { clearInterval(wait); setTimeout(() => autoplay(m), 1200); return; }
+            if (Date.now() - t0 > 15000) { clearInterval(wait); send({ type: 'hub:noplayer' }); return; }
+            if (++tries % 4 === 0) { try { history.replaceState({}, '', real); dispatchEvent(new PopStateEvent('popstate', { state: {} })); } catch {} }
+          }, 400);
+        }
+        break;
+      }
       case 'hub:player':
         if (player.active) { if (typeof player[m.cmd] === 'function') player[m.cmd](...(m.args || [])); }
         else if (playerFrame) intoFrame(playerFrame, m, 0, 0);     // the running player is in an embedded frame

@@ -18,7 +18,7 @@ const state = {
   focus: null,             // home/search: {el,x,y,w,h}; portal: {id,x,y,w,h}
   sources: [], env: null,
   portalDepth: 0, goingBack: false, portalSource: null, goodUrls: [], blockedRedirects: 0,
-  playKey: null, playTitle: null, playItemId: null, autoplay: false,
+  playKey: null, playTitle: null, playItemId: null, autoplay: false, autoplayPath: null, viaHome: null,
   query: '', searchReturn: 'home',
   decisions: null, cache: null,
   metrics: { focus: [] },
@@ -224,17 +224,27 @@ async function reloadSources() {
 }
 
 // ---------- portal view ----------
+// Sites whose title pages throw out a direct visit (Tubi sends one to its 404 screen) but build the
+// same page when reached from their own front page. Learned on the first bounce, kept on the TV.
+const FRONT_DOOR_KEY = 'hub.frontDoor';
+const frontDoor = { list() { try { return JSON.parse(localStorage.getItem(FRONT_DOOR_KEY) || '[]'); } catch { return []; } },
+  has(id) { return this.list().includes(id); },
+  add(id) { if (!id || this.has(id)) return; try { localStorage.setItem(FRONT_DOOR_KEY, JSON.stringify([...this.list(), id])); } catch {} } };
+
 function openPortal(path, { key = null, title = null, itemId = null, autoplay = false } = {}) {
   if (state.view === 'settings') state.searchReturn = 'settings';
   state.playKey = key; state.playTitle = title; state.playItemId = itemId; state.autoplay = autoplay;
+  state.autoplayPath = autoplay ? path : null; state.viaHome = null;
   state.portalDepth = 0; state.goingBack = false; state.goodUrls = [path]; state.blockedRedirects = 0;
   state.portalSource = (path.match(/^\/p\/([^/]+)/) || [])[1] || null;
+  const src = (state.sources || []).find((s) => s.id === state.portalSource);
   // A dark source's frame is dark between pages too, so a navigation never flashes white.
-  const dark = !!(state.sources || []).find((s) => s.id === state.portalSource)?.rules?.dark;
-  portal.frame.style.background = dark ? '#0b0d12' : '#fff';
+  portal.frame.style.background = src?.rules?.dark ? '#0b0d12' : '#fff';
+  let start = path;
+  if (autoplay && src?.home && frontDoor.has(src.id)) { start = src.home; state.viaHome = 'loading'; state.goodUrls = [start]; }
   showView('portal');
-  portal.load(path);
-  say('Loading portal…');
+  portal.load(start);
+  say(state.viaHome ? `Opening ${title || 'it'} through ${src.name}...` : 'Loading portal…');
 }
 function wirePortal() {
   portal.onReady = (m) => {
@@ -245,17 +255,33 @@ function wirePortal() {
     if (state.goodUrls.length > 20) state.goodUrls.shift();
     if (state.goingBack) { state.goingBack = false; state.portalDepth = Math.max(1, state.portalDepth - 1); } else state.portalDepth++;
     setTimeout(refreshFocus, 50);
+    // Through the front door: the site's own page is up. Move to the title inside its app once the
+    // page has gone quiet (an app still booting takes the nudge the wrong way), eight seconds at most.
+    if (state.viaHome === 'loading') { state.viaHome = 'armed'; armGo(); return; }
     // A title chosen on the home screen plays at once: the page presses its own play control and
     // hands the video over. Only the first page of the visit; a later page is the user's own doing.
     if (state.autoplay && state.portalDepth === 1) {
       state.autoplay = false;
       say(`Starting ${state.playTitle || 'playback'}...`);
-      setTimeout(() => { if (state.view === 'portal' && !player.active) portal.send({ type: 'hub:autoplay', resumeAt: resumeFor() }); }, 600);
+      setTimeout(startChosenTitle, 600);
     }
   };
-  portal.onCandidates = () => { if (state.view === 'portal' && !player.active) refreshFocus(); };
+  portal.onCandidates = () => { if (state.viaHome === 'armed') scheduleGo(); if (state.view === 'portal' && !player.active) refreshFocus(); };
   portal.onBlocked = () => {
     if (state.view !== 'portal') return;
+    // Some sites throw out a title page opened directly (Tubi sends it to its 404 screen) but build
+    // the same page fine when reached from their own front page. Go in that way once.
+    if (state.autoplayPath && !state.viaHome) {
+      const src = state.sources.find((s) => s.id === state.portalSource);
+      if (src?.home) {
+        frontDoor.add(src.id);
+        state.viaHome = 'loading'; state.goodUrls = [src.home]; state.goingBack = false;
+        player.state = { ...player.state, active: false }; osd.hidden = true;   // whatever the thrown-out page reported
+        say(`Opening ${state.playTitle || 'it'} through ${src.name}...`);
+        portal.recreate(); portal.load(src.home);
+        return;
+      }
+    }
     state.blockedRedirects++;
     say('Blocked a redirect to another site');
     // The page that escaped is not a good page to return to: drop it and go to the one before.
@@ -284,6 +310,19 @@ function portalSelect() {
   const c = state.focus; if (!c || c.id == null) return;
   if (c.tag === 'VIDEO') return startPlayback(c.id);
   portal.send({ type: 'hub:activate', id: c.id });
+}
+/** Ask the page to start the chosen title: press its play control and hand the video over. */
+function startChosenTitle() { if (state.view === 'portal' && !player.active) portal.send({ type: 'hub:autoplay', resumeAt: resumeFor() }); }
+let goTimer = null, goDeadline = 0;
+function armGo() { goDeadline = performance.now() + 8000; scheduleGo(); }
+function scheduleGo() {
+  clearTimeout(goTimer);
+  goTimer = setTimeout(sendGo, Math.min(1500, Math.max(50, goDeadline - performance.now())));
+}
+function sendGo() {
+  if (state.viaHome !== 'armed' || state.view !== 'portal') return;
+  state.viaHome = 'went';
+  portal.send({ type: 'hub:go', path: state.autoplayPath, then: 'autoplay', title: state.playTitle, resumeAt: resumeFor() });
 }
 function playbackKey() {
   if (state.playKey) return state.playKey;
