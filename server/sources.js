@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 
-const RULE_DEFAULTS = { touch: false, css: [], removeOnMount: [], preserve: [], scrollRoot: null, player: 'video' };
+const RULE_DEFAULTS = { touch: false, css: [], removeOnMount: [], preserve: [], scrollRoot: null, player: 'video', dark: false };
 
 function prepare(s) {
   if (!s.id || !s.origin) throw new Error(`source missing id/origin: ${JSON.stringify(s)}`);

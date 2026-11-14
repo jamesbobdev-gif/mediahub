@@ -87,7 +87,8 @@ Rules are data, per source, in `config/sources.json`:
   "removeOnMount": [".interstitial"],
   "preserve": [".grid", ".card", "[data-item-id]"],
   "scrollRoot": ".grid-container",
-  "player": ".player-root video"
+  "player": ".player-root video",
+  "dark": true
 }
 ```
 
@@ -108,6 +109,10 @@ Rules are data, per source, in `config/sources.json`:
   `menu` key (`H` on desktop). The element is hidden immediately and its selector is written into
   that source's `css` rules through `PATCH /api/sources/<id>/rules`. Config is hot-reloaded, so
   rules written from the couch apply to every later page load without a restart.
+* **Dark**: `"dark": true` lays a translucent black sheet over the page, for white sites watched
+  in a dark room. It lifts during playback.
+* **Web components**: the content script opens every shadow root the page creates and watches it,
+  so tiles, links and players inside components are focus candidates like everything else.
 
 ### Redirect and escape protection
 

@@ -199,6 +199,9 @@ function openPortal(path, { key = null, title = null, itemId = null } = {}) {
   state.playKey = key; state.playTitle = title; state.playItemId = itemId;
   state.portalDepth = 0; state.goingBack = false; state.goodUrls = [path]; state.blockedRedirects = 0;
   state.portalSource = (path.match(/^\/p\/([^/]+)/) || [])[1] || null;
+  // A dark source's frame is dark between pages too, so a navigation never flashes white.
+  const dark = !!(state.sources || []).find((s) => s.id === state.portalSource)?.rules?.dark;
+  portal.frame.style.background = dark ? '#0b0d12' : '#fff';
   showView('portal');
   portal.load(path);
   say('Loading portal…');

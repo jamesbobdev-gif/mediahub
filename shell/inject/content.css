@@ -27,5 +27,10 @@ html.hub-playback [class*="fixed-top"] {
   position: static !important;
 }
 
+/* Dark (per-source rule): a translucent black sheet over a bright page, lifted during playback. */
+html.hub-dark { background: #0b0d12; }
+html.hub-dark::after { content: ""; position: fixed; inset: 0; background: rgba(0, 0, 0, .55); pointer-events: none; z-index: 2147483645; }
+html.hub-dark.hub-playback::after { display: none; }
+
 /* Portal focus styles are usually suppressed; the shell draws its own ring. */
 *:focus { outline: none !important; }

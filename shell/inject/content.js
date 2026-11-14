@@ -2,8 +2,9 @@
 // The page lives on the portal origin; the shell lives on the hub origin. They talk only through
 // postMessage, so nothing a portal script does can reach the shell, its storage or the hub API.
 // Responsibilities here: desktop-layout commitment, routing every runtime URL through the hub,
-// popup/redirect suppression, noise removal that preserves grid geometry, scroll-root forwarding,
-// focus candidates for spatial navigation, and the in-frame player takeover.
+// popup/redirect suppression, seeing into web components' shadow trees, noise removal that preserves
+// grid geometry, scroll-root forwarding, dimming bright pages, focus candidates for spatial
+// navigation, and the in-frame player takeover.
 (function () {
   'use strict';
   const RULES = Object.assign({ css: [], removeOnMount: [], preserve: [], scrollRoot: null, player: 'video', touch: false }, window.__HUB_RULES || {});
@@ -21,6 +22,9 @@
     try { delete window.ontouchstart; } catch {}
     try { Object.defineProperty(window, 'ontouchstart', { get: () => undefined, set() {}, configurable: true }); } catch {}
   }
+  // A source with "dark": true gets a translucent black sheet over the page (content.css), so a
+  // white site does not light up the room. Set before first paint; lifted during playback.
+  if (RULES.dark) document.documentElement.classList.add('hub-dark');
 
   // ---- 2. Every URL a script makes goes through the hub -------------------------
   const sameOrigin = (href) => { try { return new URL(href, location.href).origin === location.origin; } catch { return false; } };
@@ -81,6 +85,42 @@
     if ((type === 'click' || type === 'mousedown' || type === 'pointerdown') && this instanceof Element) this.__hubClickable = true;
     return realAdd.call(this, type, fn, opts);
   };
+
+  // ---- 3c. Shadow roots ----------------------------------------------------------
+  // Sites built from web components keep their tiles, links and players inside shadow trees, which
+  // document-level queries and observers never reach. Every root the page creates is forced open,
+  // remembered, and watched for changes the same way the document is.
+  const shadowRoots = new Set();
+  const shadowMo = new MutationObserver(() => markDirty());
+  const realAttachShadow = Element.prototype.attachShadow;
+  Element.prototype.attachShadow = function (init) {
+    const root = realAttachShadow.call(this, Object.assign({}, init, { mode: 'open' }));
+    shadowRoots.add(root);
+    try { shadowMo.observe(root, { childList: true, subtree: true }); } catch {}
+    markDirty();
+    return root;
+  };
+  /** The document plus every shadow root whose host is still in the page. */
+  function roots() {
+    const out = [document];
+    for (const r of shadowRoots) { if (r.host && r.host.isConnected) out.push(r); else shadowRoots.delete(r); }
+    return out;
+  }
+  function queryAll(selector) {
+    const out = [];
+    for (const r of roots()) { try { out.push(...r.querySelectorAll(selector)); } catch {} }
+    return out;
+  }
+  /** elementFromPoint that keeps descending while the hit is a shadow host. */
+  function deepElementFromPoint(x, y) {
+    let el = document.elementFromPoint(x, y);
+    for (let i = 0; el && el.shadowRoot && i < 12; i++) {
+      const inner = el.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  }
 
   // ---- 4. Noise removal preserving grid geometry --------------------------------
   function inPreserved(el) { return PRESERVE ? !!el.closest(PRESERVE) : false; }
@@ -197,9 +237,13 @@
       seen.add(el);
       out.push({ id: idOf(el), x: r.left, y: r.top, w: r.width, h: r.height, tag: el.tagName });
     };
-    for (const el of document.querySelectorAll(FOCUSABLE)) push(el);
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
-    for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.__hubClickable && !n.closest(FOCUSABLE)) push(n);
+    for (const el of queryAll(FOCUSABLE)) push(el);
+    for (const root of roots()) {
+      const base = root === document ? document.body : root;
+      if (!base) continue;
+      const walker = document.createTreeWalker(base, NodeFilter.SHOW_ELEMENT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.__hubClickable && !n.closest(FOCUSABLE)) push(n);
+    }
     return out;
   }
   let dirty = true, pushScheduled = false;
@@ -341,14 +385,14 @@
       case 'hub:anchor': { const el = elOf(m.id); if (el) scrollIntoAnchor(el); break; }
       case 'hub:scrollBy': (scrollRoot || window).scrollBy({ top: m.dy }); markDirty(); break;
       case 'hub:elementAt': {
-        const el = document.elementFromPoint(m.x, m.y); if (!el) { send({ type: 'hub:nothing' }); break; }
+        const el = deepElementFromPoint(m.x, m.y); if (!el) { send({ type: 'hub:nothing' }); break; }
         if (m.then === 'hide') send({ type: 'hub:hidden', selector: hideUser(el) });
         else if (el.tagName === 'VIDEO' || el.closest('video')) player.attach(el.closest('video') || el, m);
         else activate(el);
         break;
       }
       case 'hub:hide': { const el = elOf(m.id); if (el) send({ type: 'hub:hidden', selector: hideUser(el) }); break; }
-      case 'hub:play': { const v = (m.id && elOf(m.id)) || document.querySelector(RULES.player) || document.querySelector('video'); if (v) player.attach(v, m); else send({ type: 'hub:noplayer' }); break; }
+      case 'hub:play': { const v = (m.id && elOf(m.id)) || queryAll(RULES.player)[0] || queryAll('video')[0]; if (v) player.attach(v, m); else send({ type: 'hub:noplayer' }); break; }
       case 'hub:player': if (typeof player[m.cmd] === 'function') player[m.cmd](...(m.args || [])); break;
       case 'hub:decisions': send({ type: 'hub:decisions', total: decisions.length, hidden: decisions.filter((d) => d.kind === 'hide').length, recent: decisions.slice(-8) }); break;
       case 'hub:back': history.back(); break;
