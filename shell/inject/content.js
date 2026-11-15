@@ -173,6 +173,7 @@
    *  skipping controls that sit inside a link to some other page (a tile's play overlay). */
   function findPlayControl() {
     let hinted = null;
+    const hasVideo = queryAll('video').length > 0;   // the page's own player is here: a link away is not the control
     for (const el of queryAll(FOCUSABLE + ',[class*="play" i],[data-testid*="play" i],[id*="play" i]')) {
       if (el.tagName === 'VIDEO' || el.closest('.hub-hidden,.hub-placeholder')) continue;
       // Anywhere on the page, not only in view: on a TV the hero fills the frame and the play
@@ -182,9 +183,11 @@
       const cs = getComputedStyle(el);
       if (cs.visibility === 'hidden' || cs.display === 'none') continue;
       const link = el.closest('a[href]');
-      if (link && link !== el) {
+      if (link) {
         const to = link.getAttribute('href') || '';
-        try { if (to && !/^(#|javascript:)/i.test(to) && new URL(to, location.href).pathname !== location.pathname) continue; } catch {}
+        let away = false;
+        try { away = !!to && !/^(#|javascript:)/i.test(to) && new URL(to, location.href).pathname !== location.pathname; } catch {}
+        if (away && (link !== el || hasVideo)) continue;   // a tile's overlay, or Vimeo's "Watch" footer link beside a loaded player
       }
       const label = labelOf(el);
       if (label.length > 30 || /trailer|preview|playlist|player|in the app|get the app|download|app store|google play|^play icon$/i.test(label)) continue;   // a tile's text, an app offer, not the control
