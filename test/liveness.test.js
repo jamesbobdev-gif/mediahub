@@ -41,6 +41,16 @@ test('a page that reloads itself once is given the same patience again', () => {
   assert.equal(w.state(7 * s), 'ok');
 });
 
+test('a load event with no new page behind it does not kill a page that keeps talking', () => {
+  const w = new FrameWatch();
+  w.load(0); w.loaded(1 * s); w.ready(1.5 * s);
+  w.loaded(20 * s);                               // the browser fired load again; the same page is still there
+  w.message(21 * s);                              // it answers the next ping
+  assert.equal(w.state(25 * s), 'ok');
+  w.loaded(30 * s);                               // a real navigation: nothing answers after it
+  assert.equal(w.state(35 * s), 'dead');
+});
+
 test('an announced page that goes silent is dead, and any message resets the count', () => {
   const w = new FrameWatch();
   w.load(0); w.loaded(1 * s); w.ready(1 * s);

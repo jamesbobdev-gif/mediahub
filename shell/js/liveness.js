@@ -33,8 +33,13 @@ export class FrameWatch {
     if (this.loadedAt != null) this.loadedAt = null; else this.readyPending = true;
   }
 
-  /** Any message from the page: it is alive. */
-  message(now) { this.lastSeen = now; }
+  /** Any message from the page: it is alive. A load event with no new page behind it (the Fire TV
+   *  browser fires one for a page that is still there) is forgotten once the announced page talks
+   *  again; a page that really navigated away cannot talk, so it still counts as dead. */
+  message(now) {
+    this.lastSeen = now;
+    if (this.readyAt != null && this.loadedAt != null) this.loadedAt = null;
+  }
 
   /** Seconds since the page last said anything. */
   silence(now) { return Math.max(0, now - this.lastSeen) / 1000; }
