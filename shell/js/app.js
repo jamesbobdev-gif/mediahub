@@ -257,6 +257,7 @@ function openPortal(path, { key = null, title = null, itemId = null, autoplay = 
   const src = (state.sources || []).find((s) => s.id === state.portalSource);
   // A dark source's frame is dark between pages too, so a navigation never flashes white.
   portal.frame.style.background = src?.rules?.dark ? '#0b0d12' : '#fff';
+  if (src?.rules?.keys === 'page') setTimeout(() => say('The remote drives this page. Press the menu button to come back to the hub.'), 1200);
   let start = path;
   if (autoplay && src?.home && frontDoor.has(src.id)) { start = src.home; state.viaHome = 'loading'; state.goodUrls = [start]; }
   showView('portal');
@@ -333,6 +334,8 @@ function portalSelect() {
   if (c.tag === 'VIDEO') return startPlayback(c.id);
   portal.send({ type: 'hub:activate', id: c.id });
 }
+/** Does the current source take the remote's keys itself (a TV-style app)? */
+function pageKeys() { return (state.sources || []).find((s) => s.id === state.portalSource)?.rules?.keys === 'page'; }
 /** Ask the page to start the chosen title: press its play control and hand the video over. */
 function startChosenTitle() { if (state.view !== 'portal' || player.active) return; trace('autoplay-sent', { href: portal.href }); portal.send({ type: 'hub:autoplay', resumeAt: resumeFor() }); }
 let goTimer = null, goDeadline = 0;
@@ -468,6 +471,13 @@ function dispatch(intent, { repeat, phase }) {
     }
   }
   if (state.mode === 'cursor' && ['up', 'down', 'left', 'right'].includes(intent)) { if (!repeat) cursor.press(intent); return; }
+  // A TV-style app (YouTube's TV page) drives its own highlight: the arrows, OK and Back go to it,
+  // and the menu button is the way back to the hub.
+  if (state.view === 'portal' && pageKeys() && ['up', 'down', 'left', 'right', 'select', 'back', 'play', 'pause', 'playpause', 'ff', 'rw'].includes(intent)) {
+    if (intent === 'back' && repeat) return;
+    portal.send({ type: 'hub:key', intent });
+    return;
+  }
   switch (intent) {
     case 'up': case 'down': case 'left': case 'right': return move(intent);
     case 'select': return state.view === 'home' ? homeSelect() : state.view === 'search' ? searchSelect() : state.view === 'settings' ? settings.select(state.focus?.el) : portalSelect();
@@ -482,7 +492,7 @@ function dispatch(intent, { repeat, phase }) {
       return;
     case 'mode': case 'cursor': if (state.view === 'portal') setMode(state.mode === 'cursor' ? 'spatial' : 'cursor'); return;
     case 'play': case 'playpause': if (state.view === 'portal') startPlayback(); return;
-    case 'menu': if (state.view === 'portal') inspectHide(); else if (state.view === 'home') openSettings(); return;
+    case 'menu': if (state.view === 'portal') { if (pageKeys()) leavePortal(); else inspectHide(); } else if (state.view === 'home') openSettings(); return;
     case 'info': return toggleHud();
     default: return;
   }

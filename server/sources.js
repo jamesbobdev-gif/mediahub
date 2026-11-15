@@ -3,7 +3,9 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 
-const RULE_DEFAULTS = { touch: false, css: [], removeOnMount: [], preserve: [], scrollRoot: null, player: 'video', dark: false };
+// keys: 'hub' (the shell moves its own focus ring over the page) or 'page' (the arrows, OK and
+// Back go to the page itself, for a TV-style app that drives its own highlight; menu returns).
+const RULE_DEFAULTS = { touch: false, css: [], removeOnMount: [], preserve: [], scrollRoot: null, player: 'video', dark: false, keys: 'hub' };
 
 function prepare(s) {
   if (!s.id || !s.origin) throw new Error(`source missing id/origin: ${JSON.stringify(s)}`);

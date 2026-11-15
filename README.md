@@ -115,6 +115,8 @@ Rules are data, per source, in `config/sources.json`:
   rules written from the couch apply to every later page load without a restart.
 * **Dark**: `"dark": true` lays a translucent black sheet over the page, for white sites watched
   in a dark room. It lifts during playback.
+* **Keys**: `"keys": "page"` hands the arrows, OK and Back to the page itself, for a TV-style app
+  that drives its own highlight (YouTube's TV page); the menu button then returns to the hub.
 * **Web components**: the content script opens every shadow root the page creates and watches it,
   so tiles, links and players inside components are focus candidates like everything else.
 

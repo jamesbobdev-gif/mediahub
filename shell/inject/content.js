@@ -611,6 +611,19 @@
         break;
       }
       case 'hub:autoplay': autoplay(m); break;
+      // A remote key for the page itself (rules.keys = 'page'): sent as the key a TV browser would
+      // send, so an app that drives its own highlight sees it.
+      case 'hub:key': {
+        const codes = { up: [38, 'ArrowUp'], down: [40, 'ArrowDown'], left: [37, 'ArrowLeft'], right: [39, 'ArrowRight'], select: [13, 'Enter'], back: [27, 'Escape'], play: [415, 'MediaPlay'], pause: [19, 'MediaPause'], playpause: [179, 'MediaPlayPause'], ff: [417, 'MediaFastForward'], rw: [412, 'MediaRewind'] };
+        const c = codes[m.intent]; if (!c) break;
+        const target = document.activeElement || document.body;
+        for (const type of ['keydown', 'keyup']) {
+          const ev = new KeyboardEvent(type, { key: c[1], code: c[1], bubbles: true, cancelable: true });
+          for (const prop of ['keyCode', 'which']) { try { Object.defineProperty(ev, prop, { get: () => c[0] }); } catch {} }
+          target.dispatchEvent(ev);
+        }
+        break;
+      }
       // Move to another page of this site inside its app, the way a click on one of its own links
       // would, without a new document: some sites only build a title page properly this way.
       case 'hub:go': {
