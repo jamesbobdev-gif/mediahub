@@ -110,6 +110,20 @@ section[hidden] { display: none !important; }
 .settings-add .keyboard { margin-top: 10px; }
 .settings-add .key.next { width: 160px; }
 
+/* ---- open a website ---- */
+#view-website { position: absolute; inset: 0; overflow: hidden; padding: 44px 64px 96px; display: flex; flex-direction: column; }
+.website-pane { display: flex; gap: 44px; flex: 1; min-height: 0; }
+.website-left { flex: 0 0 auto; overflow-y: auto; scrollbar-width: none; padding: 6px; }
+.website-left::-webkit-scrollbar { display: none; }
+.website-left .keyboard { margin-top: 10px; }
+.website-left .key.go { width: 160px; }
+.website-recent { flex: 1; min-width: 0; overflow-y: auto; scrollbar-width: none; padding: 6px 6px 40px; }
+.website-recent::-webkit-scrollbar { display: none; }
+.website-recent h3 { font-size: 18px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .6px; margin: 6px 0 10px; }
+.website-recent .brow { flex-wrap: wrap; }
+.website-recent .brow-host { flex: 1 1 100%; }
+.website-recent .brow-sub { flex: 1 1 100%; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+
 /* ---- portal ---- */
 #view-portal { position: absolute; inset: 0; background: #000; }
 #portal-wrap { position: absolute; inset: 0; overflow: hidden; }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { sourceIdFor, siteOf, hostPattern, parseAddress, addSource, removeSource, allowHost, patchSourceRules, loadSources, ownHostPatterns, brandOf , setSourceFields } from '../server/sources.js';
+import { sourceIdFor, siteOf, hostPattern, parseAddress, addSource, removeSource, allowHost, patchSourceRules, loadSources, ownHostPatterns, brandOf, setSourceFields, reloadSources, settleAddress, openWebsite, pruneTemporary, TEMP_LIMIT } from '../server/sources.js';
 
 function tempFile(list) {
   const file = path.join(mkdtempSync(path.join(tmpdir(), 'hub-sources-')), 'sources.json');
@@ -116,4 +116,81 @@ test('the start page and the browser a source is fetched as can be changed, on t
   assert.equal(s.userAgent, undefined); assert.equal(s.name, 'YouTube TV');
   assert.deepEqual(read(file)[0], { id: 'yt', name: 'YouTube TV', origin: 'https://www.youtube.com', home: '/feed/trending?x=1' });
   assert.throws(() => setSourceFields(file, 'nope', { home: '/' }), /unknown source/);
+});
+
+test('a typed address opens as a source kept in memory, never written to the file', () => {
+  const file = tempFile([{ id: 'demo', name: 'Demo', origin: 'http://127.0.0.1:8787', home: '/demo/' }]);
+  const sources = loadSources(file);
+  const r = openWebsite(sources, parseAddress('bbc.com/news'), { now: 1000 });
+  assert.equal(r.saved, false);
+  assert.equal(r.path, '/p/web-bbc-com/news');
+  assert.equal(r.source.id, 'web-bbc-com');
+  assert.equal(r.source.name, 'bbc.com');
+  assert.equal(r.source.temporary, true);
+  assert.equal(r.source.originUrl.origin, 'https://bbc.com');
+  assert.ok(r.source.allowHostsRe.some((re) => re.test('static.bbc.com')), 'its own site is allowed');
+  assert.equal(r.source.rules.player, 'video', 'prepared like a loaded source');
+  assert.equal(read(file).length, 1, 'the file is untouched');
+  // The same site again reuses the entry; another page of it is just another path.
+  const again = openWebsite(sources, parseAddress('https://bbc.com/sport'), { now: 2000 });
+  assert.equal(again.source, r.source);
+  assert.equal(again.path, '/p/web-bbc-com/sport');
+  assert.equal(again.source.openedAt, 2000);
+  assert.equal([...sources.keys()].filter((id) => id.startsWith('web-')).length, 1);
+  // A reload of the file keeps it, and it is neither added nor removed.
+  const diff = reloadSources(file, sources);
+  assert.deepEqual(diff, { added: [], removed: [] });
+  assert.ok(sources.has('web-bbc-com'));
+});
+
+test('an address on a saved source opens that source instead', () => {
+  const sources = loadSources(tempFile([
+    { id: 'tubi', name: 'Tubi', origin: 'https://tubitv.com', home: '/' },
+    { id: 'demo', name: 'Demo', origin: 'http://127.0.0.1:8787/demo/', home: '/' },
+  ]));
+  let r = openWebsite(sources, parseAddress('tubitv.com/movies'));
+  assert.deepEqual([r.saved, r.path, r.source.id], [true, '/p/tubi/movies', 'tubi']);
+  r = openWebsite(sources, parseAddress('http://127.0.0.1:8787/demo/list'));
+  assert.deepEqual([r.saved, r.path], [true, '/p/demo/list'], 'a source with a base path strips it');
+  r = openWebsite(sources, parseAddress('http://127.0.0.1:8787/other'));
+  assert.equal(r.saved, false, 'a page outside the base path is its own website');
+  r = openWebsite(sources, parseAddress('www.tubitv.com'));
+  assert.equal(r.saved, false, 'a different host of the site is opened on its own');
+  assert.equal(r.source.id, 'web-tubitv-com');
+  assert.equal(sources.size, 4);
+});
+
+test('only the last twenty opened websites are kept', () => {
+  const sources = new Map();
+  for (let i = 0; i < TEMP_LIMIT + 3; i++) openWebsite(sources, parseAddress(`site${i}.test`), { now: i });
+  assert.equal(sources.size, TEMP_LIMIT);
+  assert.equal(sources.has('web-site0-test'), false);
+  assert.equal(sources.has('web-site2-test'), false);
+  assert.ok(sources.has('web-site3-test'));
+  assert.ok(sources.has(`web-site${TEMP_LIMIT + 2}-test`));
+  assert.deepEqual(pruneTemporary(sources, 2).length, TEMP_LIMIT - 2);
+  assert.deepEqual([...sources.keys()].sort(), [`web-site${TEMP_LIMIT + 1}-test`, `web-site${TEMP_LIMIT + 2}-test`], 'the two opened last stay');
+  assert.equal(sources.size, 2);
+});
+
+test('a typed address settles where its own site sends it, and nowhere else', async () => {
+  const hops = [];
+  const fetchFn = async (url) => {
+    hops.push(url);
+    const reply = (status, location) => ({ status, headers: new Headers(location ? { location } : {}), body: { cancel() {} } });
+    if (url === 'https://bbc.com/news') return reply(301, 'https://www.bbc.com/news');
+    if (url === 'https://www.bbc.com/news') return reply(302, '/news/world');
+    if (url === 'https://leaves.test/') return reply(301, 'https://elsewhere.test/');
+    if (url === 'https://loop.test/') return reply(301, 'https://loop.test/');
+    if (url === 'https://down.test/') throw new Error('connect ECONNREFUSED');
+    return reply(200);
+  };
+  assert.deepEqual(await settleAddress('bbc.com/news', { fetchFn }), { origin: 'https://www.bbc.com', home: '/news/world' });
+  assert.deepEqual(hops, ['https://bbc.com/news', 'https://www.bbc.com/news', 'https://www.bbc.com/news/world']);
+  assert.deepEqual(await settleAddress('leaves.test', { fetchFn }), { origin: 'https://leaves.test', home: '/' }, 'a redirect to another site is not followed');
+  assert.deepEqual(await settleAddress('down.test', { fetchFn }), { origin: 'https://down.test', home: '/' }, 'an error keeps the address as typed');
+  hops.length = 0;
+  await settleAddress('loop.test', { fetchFn, hops: 3 });
+  assert.equal(hops.length, 3, 'a loop stops after the allowed hops');
+  await assert.rejects(settleAddress('', { fetchFn }), /empty/);
 });

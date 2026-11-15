@@ -8,13 +8,14 @@ import { progress, history } from './progress.js';
 import { search, KEY_ROWS } from './search.js';
 import { SettingsView } from './settings.js';
 import { startRemote } from './remote.js';
+import { WebsiteView } from './website.js';
 
 const $ = (s) => document.querySelector(s);
-const views = { home: $('#view-home'), search: $('#view-search'), settings: $('#view-settings'), portal: $('#view-portal') };
+const views = { home: $('#view-home'), search: $('#view-search'), settings: $('#view-settings'), website: $('#view-website'), portal: $('#view-portal') };
 const ring = $('#focus-ring'), cursorEl = $('#cursor'), toast = $('#toast'), osd = $('#osd'), hud = $('#hud');
 
 const state = {
-  view: 'home',            // 'home' | 'search' | 'settings' | 'portal'
+  view: 'home',            // 'home' | 'search' | 'settings' | 'website' | 'portal'
   mode: 'spatial',         // 'spatial' | 'cursor'
   focus: null,             // home/search: {el,x,y,w,h}; portal: {id,x,y,w,h}
   sources: [], env: null,
@@ -27,7 +28,7 @@ const state = {
 
 const catalog = new CatalogCache();
 const art = new ArtworkLru();
-let portal, player, settings, remote;
+let portal, player, settings, remote, website;
 const cursor = new VirtualCursor({ el: cursorEl, bounds: () => ({ w: innerWidth, h: innerHeight }) });
 // The page sees the cursor as a mouse (hover menus, player controls), a few times a second.
 let pointerSentAt = 0;
@@ -129,8 +130,9 @@ function renderHome() {
   const countFor = (id) => items.filter((i) => i.sources.some((s) => s.sourceId === id)).length;
   const srcs = state.sources.map((s) => { const t = tile({ portal: s.home, title: s.name, sub: `${countFor(s.id)} titles · open portal`, icon: '⌂', online: true }); t.dataset.source = s.id; return t; });
   const searchTile = tile({ title: 'Search', sub: `${items.length} titles across ${state.sources.length} sources`, icon: '⌕' }); searchTile.dataset.search = '';
+  const websiteTile = tile({ title: 'Open a website', sub: 'Type any address; ads stripped out', icon: '⌨' }); websiteTile.dataset.website = '';
   const settingsTile = tile({ title: 'Settings', sub: 'Add or remove sources, allow what they need', icon: '⚙' }); settingsTile.dataset.settings = '';
-  for (const r of [row('Continue watching', cont), row('Recently watched', recent), row('Sources', [searchTile, ...srcs, settingsTile]), ...frontRows, row('Movies', byKind('movie')), row('Series', byKind('series')), row('Episodes', byKind('episode'))]) if (r) rows.appendChild(r);
+  for (const r of [row('Continue watching', cont), row('Recently watched', recent), row('Sources', [searchTile, websiteTile, ...srcs, settingsTile]), ...frontRows, row('Movies', byKind('movie')), row('Series', byKind('series')), row('Episodes', byKind('episode'))]) if (r) rows.appendChild(r);
   lazyArtwork($('#rows'));
 }
 const fmtMin = (s) => `${Math.max(1, Math.round(s / 60))} min`;
@@ -213,6 +215,7 @@ function homeSelect() {
   const el = state.focus?.el; if (!el) return;
   if ('search' in el.dataset) return openSearch();
   if ('settings' in el.dataset) return openSettings();
+  if ('website' in el.dataset) return showView('website');
   if (el.dataset.key) {
     const p = progress.get(el.dataset.key);
     if (p) return openPortal(p.portalUrl, { key: el.dataset.key, title: p.title, itemId: p.itemId, autoplay: true });
@@ -249,7 +252,7 @@ const frontDoor = { list() { try { return JSON.parse(localStorage.getItem(FRONT_
   add(id) { if (!id || this.has(id)) return; try { localStorage.setItem(FRONT_DOOR_KEY, JSON.stringify([...this.list(), id])); } catch {} } };
 
 function openPortal(path, { key = null, title = null, itemId = null, autoplay = false } = {}) {
-  if (state.view === 'settings') state.searchReturn = 'settings';
+  if (state.view === 'settings' || state.view === 'website') state.searchReturn = state.view;
   state.playKey = key; state.playTitle = title; state.playItemId = itemId; state.autoplay = autoplay;
   state.autoplayPath = autoplay ? path : null; state.viaHome = null;
   state.portalDepth = 0; state.goingBack = false; state.goodUrls = [path]; state.blockedRedirects = 0;
@@ -379,9 +382,10 @@ function showView(name) {
   if (name === 'home') renderHome();
   if (name === 'search') renderSearch();
   if (name === 'settings') settings.open(); else settings?.close();
+  if (name === 'website') website.open();
   refreshFocus();
 }
-function leavePortal() { showView(['search', 'settings'].includes(state.searchReturn) ? state.searchReturn : 'home'); state.searchReturn = 'home'; }
+function leavePortal() { showView(['search', 'settings', 'website'].includes(state.searchReturn) ? state.searchReturn : 'home'); state.searchReturn = 'home'; }
 function setMode(mode) {
   state.mode = mode;
   if (mode === 'cursor') { cursor.show(); ring.hidden = true; say('Cursor mode'); }
@@ -480,12 +484,13 @@ function dispatch(intent, { repeat, phase }) {
   }
   switch (intent) {
     case 'up': case 'down': case 'left': case 'right': return move(intent);
-    case 'select': return state.view === 'home' ? homeSelect() : state.view === 'search' ? searchSelect() : state.view === 'settings' ? settings.select(state.focus?.el) : portalSelect();
+    case 'select': return state.view === 'home' ? homeSelect() : state.view === 'search' ? searchSelect() : state.view === 'settings' ? settings.select(state.focus?.el) : state.view === 'website' ? website.select(state.focus?.el) : portalSelect();
     case 'search': if (state.view !== 'search') openSearch(); return;
     case 'back':
       if (repeat) return;
       if (state.view === 'search') { if (state.query) setQuery(state.query.slice(0, -1)); else showView('home'); return; }
       if (state.view === 'settings') { if (!settings.back()) showView('home'); return; }
+      if (state.view === 'website') { if (!website.back()) showView('home'); return; }
       if (state.view !== 'portal') return;
       if (state.portalDepth > 1) { state.goingBack = true; portal.send({ type: 'hub:back' }); }
       else leavePortal();
@@ -521,12 +526,14 @@ async function boot() {
     if (e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
     if (state.view === 'search') { e.preventDefault(); e.stopImmediatePropagation(); typeChar(e.key.toLowerCase()); }
     else if (state.view === 'settings' && settings.typing()) { e.preventDefault(); e.stopImmediatePropagation(); settings.typeChar(e.key); }
+    else if (state.view === 'website') { e.preventDefault(); e.stopImmediatePropagation(); website.typeChar(e.key); }
   }, { capture: true });
   installKeyRouter(dispatch);
   state.env = await fetch('/api/env').then((r) => r.json());
   portal = new PortalFrame({ frame: $('#portal-frame'), wrap: $('#portal-wrap'), origin: state.env.portalOrigin });
   player = new Player({ osd, portal });
   settings = new SettingsView({ root: views.settings, say, focusEl, refocus: refreshFocus, openPortal, onSourcesChanged: reloadSources, focusKey: () => state.focus?.el?.dataset?.fkey });
+  website = new WebsiteView({ root: views.website, say, focusEl, refocus: refreshFocus, openPortal, close: () => showView('home'), onSourcesChanged: reloadSources, focusKey: () => state.focus?.el?.dataset?.fkey });
   wirePortal();
   state.sources = await fetch('/api/sources').then((r) => r.json());
   await catalog.init();
@@ -540,7 +547,8 @@ async function boot() {
   views.home.addEventListener('scroll', followScroll, { passive: true, capture: true });
   views.search.addEventListener('scroll', followScroll, { passive: true, capture: true });
   views.settings.addEventListener('scroll', followScroll, { passive: true, capture: true });
-  for (const v of [views.home, views.search, views.settings]) v.addEventListener('click', (e) => { const t = e.target.closest('[data-focusable]'); if (!t) return; focusEl(t); state.view === 'home' ? homeSelect() : state.view === 'search' ? searchSelect() : settings.select(t); });
+  views.website.addEventListener('scroll', followScroll, { passive: true, capture: true });
+  for (const v of [views.home, views.search, views.settings, views.website]) v.addEventListener('click', (e) => { const t = e.target.closest('[data-focusable]'); if (!t) return; focusEl(t); state.view === 'home' ? homeSelect() : state.view === 'search' ? searchSelect() : state.view === 'website' ? website.select(t) : settings.select(t); });
   window.__app = { state, catalog, portal, player, dispatch, progress, remote };
 }
 boot();

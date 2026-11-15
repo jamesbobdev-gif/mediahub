@@ -46,14 +46,80 @@ export function loadSources(path) {
   return byId;
 }
 
-/** Reload into an existing Map so every holder (proxy, scheduler) sees the new set. Returns {added, removed}. */
+/** Reload into an existing Map so every holder (proxy, scheduler) sees the new set. Returns {added, removed}.
+ *  Websites opened without being saved (see openWebsite) are not in the file; they stay as they were. */
 export function reloadSources(path, into) {
   const fresh = loadSources(path);
+  for (const [id, s] of into) if (s.temporary && !fresh.has(id)) fresh.set(id, s);
   const added = [...fresh.keys()].filter((id) => !into.has(id));
   const removed = [...into.keys()].filter((id) => !fresh.has(id));
   into.clear();
   for (const [id, s] of fresh) into.set(id, s);
   return { added, removed };
+}
+
+// ---------- websites opened without being saved ----------
+
+/** Ids of sources made on the spot for a typed address start with this, so nothing mistakes them for saved ones. */
+export const TEMP_PREFIX = 'web-';
+/** How many such sources the hub keeps in memory; the ones not opened for longest go first. */
+export const TEMP_LIMIT = 20;
+const SETTLE_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36 MediaHub/0.1';
+
+/** Where a typed address ends up after the site's own redirects (bbc.com sends to www.bbc.com), so
+ *  the page is first-party to its source and its cookies and relative links hold. Follows a few
+ *  hops within the same site only; a redirect elsewhere, an error or a slow answer keeps the
+ *  address as typed. Returns {origin, home}. */
+export async function settleAddress(address, { fetchFn = fetch, hops = 3, timeoutMs = 4000 } = {}) {
+  let { origin, home } = parseAddress(address);
+  const site = siteOf(new URL(origin).hostname);
+  for (let i = 0; i < hops; i++) {
+    let r;
+    try {
+      r = await fetchFn(origin + home, { redirect: 'manual', signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': SETTLE_UA, accept: 'text/html,*/*;q=0.8' } });
+    } catch { break; }
+    try { r.body?.cancel?.(); } catch {}
+    const loc = r.status >= 300 && r.status < 400 ? r.headers.get('location') : null;
+    if (!loc) break;
+    let next;
+    try { next = new URL(loc, origin + home); } catch { break; }
+    if (!/^https?:$/.test(next.protocol) || siteOf(next.hostname) !== site) break;
+    origin = next.origin; home = `${next.pathname || '/'}${next.search}`;
+  }
+  return { origin, home };
+}
+
+/** A source made on the spot for a website the person typed, kept in memory only: never written to
+ *  config/sources.json, and gone when the hub restarts. Its own site is allowed, as for a saved
+ *  source. A saved source for the same host is used instead, and a temporary one for the same site
+ *  is reused. Returns {source, path, saved}, where path is the hub page to open. */
+export function openWebsite(into, { origin, home }, { now = Date.now() } = {}) {
+  const u = new URL(origin);
+  const page = home || '/';
+  for (const s of into.values()) {
+    if (s.temporary || s.originUrl.origin !== u.origin) continue;
+    const base = s.originUrl.pathname.replace(/\/$/, '');
+    if (base && !page.startsWith(base + '/')) continue;
+    return { source: s, path: `/p/${s.id}${base ? page.slice(base.length) : page}`, saved: true };
+  }
+  const site = siteOf(u.hostname);
+  const id = TEMP_PREFIX + sourceIdFor(u.hostname.replace(/^www\./, ''));
+  let s = into.get(id);
+  if (!s || s.origin !== origin) {
+    s = prepare({ id, name: site, origin, home: page, allowHosts: [hostPattern(site)], temporary: true });
+    into.set(id, s);
+  }
+  s.openedAt = now;
+  pruneTemporary(into, TEMP_LIMIT);
+  return { source: s, path: `/p/${id}${page}`, saved: false };
+}
+
+/** Drop the temporary sources opened longest ago once more than `limit` are kept. */
+export function pruneTemporary(into, limit = TEMP_LIMIT) {
+  const temps = [...into.values()].filter((s) => s.temporary).sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0));
+  const dropped = temps.slice(limit);
+  for (const s of dropped) into.delete(s.id);
+  return dropped.map((s) => s.id);
 }
 
 const readList = (path) => JSON.parse(readFileSync(path, 'utf8'));

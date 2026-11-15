@@ -178,6 +178,14 @@ All of this writes `~/mediahub/config/sources.json` on the Pi, the same file you
 by hand for feeds the finder cannot work out (the format is in the
 [README](../README.md#adding-a-source)). The file reloads on save either way.
 
+**Open a website without saving it.** The "Open a website" card on the Sources row takes any
+address (`bbc.com/news` is enough) and opens it right away with the ads, pop-ups and other sites'
+scripts stripped out, the same way a source opens. It is not added to your sources. The sites
+you opened are listed on that screen under "Opened lately": choose Open to go back to one, "Save
+as a source" to put it on the home screen for good (the hub then looks for its titles too), or
+Forget to drop it from the list. From a phone or PC, the same card works in a browser pointed at
+`http://<pi>:8787`.
+
 To clear the demo titles from the catalog:
 
 ```bash

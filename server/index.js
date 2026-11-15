@@ -5,7 +5,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, watch } from 'node:fs';
-import { loadSources, reloadSources, patchSourceRules, addSource, removeSource, allowHost, setSourceFeed, setSourceFields } from './sources.js';
+import { loadSources, reloadSources, patchSourceRules, addSource, removeSource, allowHost, setSourceFeed, setSourceFields, settleAddress, openWebsite } from './sources.js';
 import { discoverFeed } from './ingest/discover.js';
 import { loadFilters, compileFilters } from './filters.js';
 import { loadAccess, clientAllowed, controlAllowed } from './access.js';
@@ -91,7 +91,18 @@ async function route(req, res) {
 
   if (p === '/api/env') return json(res, 200, { portalOrigin: `http://${hostnameOf(req)}:${PORTAL_PORT}`, version: '0.2.0' });
   const publicSource = (s) => ({ id: s.id, name: s.name, origin: s.origin, home: `/p/${s.id}${s.home || '/'}`, startPage: s.home || '/', userAgent: s.userAgent || 'desktop', rules: s.rules, allowHosts: s.allowHosts || [], feed: s.feed ? { type: s.feed.type || (s.feed.itemRegex ? 'html' : 'json'), url: s.feed.url } : null });
-  if (p === '/api/sources' && req.method === 'GET') return json(res, 200, [...sources.values()].map(publicSource));
+  // Saved sources only; websites opened without being saved are listed with ?all=1.
+  if (p === '/api/sources' && req.method === 'GET') return json(res, 200, [...sources.values()].filter((s) => !s.temporary || url.searchParams.get('all')).map(publicSource));
+  // Open a website: any address typed on the TV opens through the cleaning proxy at once, as a
+  // source kept in memory only. Nothing is written unless the person saves it (POST /api/sources).
+  if (p === '/api/open' && req.method === 'POST') {
+    const { address } = await readJsonBody(req);
+    let settled;
+    try { settled = await settleAddress(address); } catch (e) { return json(res, 400, { error: e.message }); }
+    const { source, path: page, saved } = openWebsite(sources, settled);
+    log('website opened', source.id, settled.origin + settled.home, saved ? '(a saved source)' : '');
+    return json(res, 200, { id: source.id, name: source.name, home: page, saved, address: `${settled.origin}${settled.home}`.replace(/^https:\/\//, '') });
+  }
   // The Settings screen: add a source by name and address, remove one, allow a host it needs.
   // Each writes config/sources.json the way the rule inspector does; the hub reloads it in place.
   if (p === '/api/sources' && req.method === 'POST') {

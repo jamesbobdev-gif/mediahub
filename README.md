@@ -212,6 +212,17 @@ TV app itself never changes.
 The TV's changes go through `POST /api/sources`, `DELETE /api/sources/<id>`,
 `POST /api/sources/<id>/allow` and `POST /api/sources/<id>/discover`, which write the same file.
 
+## Opening any website
+
+The "Open a website" card on the Sources row takes any address (`bbc.com/news`) and opens it in
+the portal frame at once, through the same cleaning proxy, without saving it: `POST /api/open`
+`{address}` follows the site's own redirects (bbc.com to www.bbc.com), makes a source for it in
+memory only (id `web-<host>`, its own site allowed, nothing written to `config/sources.json`),
+and answers with the hub page to open. An address on a saved source opens that source. The hub
+keeps the last twenty such websites until it restarts; `GET /api/sources?all=1` lists them. The
+screen's "Opened lately" list is kept by the browser, and "Save as a source" makes one a real
+source through `POST /api/sources`.
+
 Only point this at sources you are entitled to access and scrape.
 
 ## Packaging for a TV
