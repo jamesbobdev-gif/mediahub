@@ -684,6 +684,12 @@
     addEventListener('scroll', markDirty, { passive: true, capture: true });
     send({ type: 'hub:ready', source: SOURCE, href: hubHref(), title: document.title });
     pushCandidates();
+    // Ten seconds in, say what the page holds, for the trace: the frames and videos a reader of
+    // the trace cannot see from the hub.
+    setTimeout(() => tell('page', {
+      title: document.title.slice(0, 60), videos: queryAll('video').length,
+      frames: [...document.querySelectorAll('iframe')].slice(0, 5).map((f) => { const r = f.getBoundingClientRect(); return { src: (f.getAttribute('src') || '').slice(0, 100), w: Math.round(r.width), h: Math.round(r.height) }; }),
+    }), 10000);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();
