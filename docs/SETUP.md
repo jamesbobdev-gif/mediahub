@@ -266,6 +266,9 @@ cd ~/mediahub && git update-index --skip-worktree config/sources.json
 
 ## Useful commands
 
+The full list for every day after the install, with backups and what to do when something breaks, is
+[RUNBOOK.md](RUNBOOK.md).
+
 | What | Command |
 |---|---|
 | Hub status | `systemctl status mediahub` |
