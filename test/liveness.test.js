@@ -54,13 +54,30 @@ test('a load event with no new page behind it does not kill a page that keeps ta
 test('an announced page that goes silent is dead, and any message resets the count', () => {
   const w = new FrameWatch();
   w.load(0); w.loaded(1 * s); w.ready(1 * s);
-  assert.equal(w.state(4 * s), 'ok');
-  assert.equal(w.state(5.5 * s), 'dead');
+  assert.equal(w.state(10 * s), 'ok');
+  assert.equal(w.state(11.5 * s), 'dead');
   const w2 = new FrameWatch();
   w2.load(0); w2.loaded(1 * s); w2.ready(1 * s);
   w2.message(4 * s); w2.message(7 * s);
-  assert.equal(w2.state(10 * s), 'ok');
+  assert.equal(w2.state(16 * s), 'ok');
   assert.equal(Math.round(w2.silence(10 * s)), 3);
+});
+
+test('time the watcher itself slept through counts against nobody', () => {
+  const w = new FrameWatch({ silentMs: 4000, tickMs: 1000 });
+  w.load(0); w.loaded(1 * s); w.ready(1.5 * s);
+  w.tick(2 * s); w.message(2 * s);
+  w.tick(14 * s);                                 // the browser was busy for twelve seconds: no ping went out
+  assert.equal(w.state(14 * s), 'ok');
+  for (let t = 15; t <= 17; t++) w.tick(t * s);  // it looks on time again
+  assert.equal(w.state(17 * s), 'ok');
+  for (let t = 18; t <= 20; t++) w.tick(t * s);
+  assert.equal(w.state(20 * s), 'dead');          // now the page really has been silent
+  const w2 = new FrameWatch({ readyWaitMs: 4000, tickMs: 1000 });
+  w2.load(0); w2.loaded(1 * s); w2.tick(1 * s);
+  w2.tick(10 * s);                                // loaded, then the browser was busy: the page still gets its seconds to announce itself
+  assert.equal(w2.state(10 * s), 'loading');
+  assert.equal(w2.state(15 * s), 'dead');
 });
 
 test('a frame that never fires load nor ready is dead after the stall limit, not before', () => {

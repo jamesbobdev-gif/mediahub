@@ -9,15 +9,27 @@ export class FrameWatch {
    * @param readyWaitMs  how long a page may take after its load event to announce itself
    * @param stallMs      how long a page may take to fire a load event at all
    * @param silentMs     how long an announced page may stay silent before it counts as gone
+   * @param tickMs       how often the watcher looks (its own lateness is discounted, see tick)
    */
-  constructor({ readyWaitMs = 4000, stallMs = 20000, silentMs = 4000 } = {}) {
-    Object.assign(this, { readyWaitMs, stallMs, silentMs });
+  constructor({ readyWaitMs = 4000, stallMs = 20000, silentMs = 10000, tickMs = 1000 } = {}) {
+    Object.assign(this, { readyWaitMs, stallMs, silentMs, tickMs });
     this.load(0);
   }
 
   /** The frame was pointed at a page. */
   load(now) {
-    this.loadAt = now; this.loadedAt = null; this.readyAt = null; this.lastSeen = now; this.readyPending = false;
+    this.loadAt = now; this.loadedAt = null; this.readyAt = null; this.lastSeen = now; this.readyPending = false; this.lastTick = now;
+  }
+
+  /** The watcher looks in every tickMs. When it looks late, the browser was busy for the whole
+   *  screen (a TV stick runs the shell and the page on one thread), so the page could not have
+   *  spoken: the missing time counts against nothing. */
+  tick(now) {
+    const late = now - this.lastTick - this.tickMs;
+    this.lastTick = now;
+    if (late <= 0) return;
+    this.lastSeen += late; this.loadAt += late;
+    if (this.loadedAt != null) this.loadedAt += late;
   }
 
   /** The frame's load event. A ready that came just before it belongs to this load. */

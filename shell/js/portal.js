@@ -35,6 +35,7 @@ export class PortalFrame {
     this._hb = setInterval(() => {
       if (!this.frame.src || this.frame.src === 'about:blank') return;
       const now = performance.now();
+      this.watch.tick(now);
       if (this.watch.state(now) === 'dead') { const why = this.watchInfo(); this.watch.load(now); this.ready = false; this.onBlocked(why); return; }
       this.send({ type: 'hub:ping', n: Date.now() });
     }, 1000);
