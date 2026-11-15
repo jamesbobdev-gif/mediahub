@@ -48,15 +48,21 @@ the artwork store were checked for leftovers.
 | On the hub's home screen the outline did not line up with the tile after a move: the tile grows and lifts for 140 ms after the ring is drawn, and the stick snaps the row into place a frame later | shell | The ring follows the tile until it has settled |
 | Pluto's "Play Now" reaches its player, which stays at "Advertisement is loading" on the stick (screen black, no sound, the page stops answering) and on a PC through the hub. Its StreamingUrl call answers with a relative stitcher path and no URL; the player logs that it has no asset URL | site, proxy | Open. Allowing its consent manager (ketchcdn, ketchjs, paramount) and ad SDK (imasdk) hosts changed nothing; those stay allowed for Pluto |
 | Keys sent over ADB reach the stick late or not at all while a page is busy; a press can land seconds later, on a different screen | test method | The hub's control channel (`POST /api/tv/<id>/command`, docs/CONTROL.md) is the reliable way to drive the stick from a script |
+| On a PBS show page the play control is "Watch Now", a link to the episode page; the stick landed there and waited | shell | Play at once follows a play control that is a link, once, on the page it opens |
+| On Vimeo the page already held its video, but the play step pressed a footer link called "Watch" and left for Vimeo's general watch page | injected script | A link away from the page is not its play control when the page holds a video. Paper Trail then played on the stick (14 min, the hub's player took it over) |
+| Opening a second title right after one had played was reported as "already playing" and the play step was skipped (Plex after Vimeo) | shell | Opening a title forgets the previous page's video |
+| PBS's episode page never gives its player frame an address through the hub (the frame is sized but empty on the stick); the page's identity check stays "unknown", and the frame's address is only built after it resolves | site | Open. The same page in a PC browser on a VPN showed the same, so it may not be the hub |
+| Plex's "Watch Free" page draws its player (0:00 / 0:00) and never loads a stream, on the stick and on a PC through the hub; it offers Sign In | site | Open; Plex's free streaming may need an account. Its ad SDK hosts (imasdk, gstatic) were allowed for Plex and changed nothing |
+| A YouTube video chosen from the desktop search results (second YouTube entry) went black and the stick stopped reporting, like Pluto's player | site, shell | Open. YouTube's TV page is the better entry: it opens and its keys work; a video was not tried there because its signed-out home offers only a search box, which the remote cannot type into |
 
 ## Still to check on the TV itself
 
-- Done on the stick: Tubi (Coraline from its poster: plays at once, pause, seek, Back), YouTube's
-  TV page (opens, keys drive it, no playback tried), Pluto (opens, title page, Play Now reaches a
-  player that does not start: see the table), the Settings screen (list, detail, Allow buttons and
-  the button row all reachable with the arrows; Open works).
-- Each remaining source, from its card and from a poster: PBS, Plex, the Internet Archive, Vimeo:
-  open, play, pause, seek, Back to the hub, with no bounce and no white screen.
-- A free video on YouTube's TV page: play, pause, seek.
+- Done on the stick: Tubi (Coraline from its poster: plays at once, pause, seek, Back), Vimeo
+  (Paper Trail from its poster: plays at once), YouTube's TV page (opens, keys drive it), Pluto
+  (opens, title page, Play Now reaches a player that does not start), PBS and Plex (reach their
+  player pages, which stay empty: see the table), the Settings screen (list, detail, Allow buttons
+  and the button row all reachable with the arrows; Open works). The Internet Archive is no longer
+  among the configured sources.
+- Pause and seek on Vimeo; a free video on YouTube's TV page.
 - Adding and removing a source from the Settings screen with the remote, as opposed to through
   the API the screen calls.
