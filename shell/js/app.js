@@ -52,6 +52,7 @@ function setFocus(c, { scroll = true } = {}) {
 }
 const focusEl = (el) => { const r = el.getBoundingClientRect(); setFocus({ el, x: r.left, y: r.top, w: r.width, h: r.height }); };
 function drawRing(c) {
+  if (state.view === 'portal' && pageKeys()) { ring.hidden = true; return; }   // the page draws its own highlight
   if (c.el?.classList?.contains('key')) { ring.hidden = true; return; }
   let { x, y, w, h } = c;
   if (state.view !== 'portal') { const r = c.el.getBoundingClientRect(); x = r.left; y = r.top; w = r.width; h = r.height; }

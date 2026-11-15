@@ -110,11 +110,21 @@
     if (!d || !d.set) continue;
     Object.defineProperty(Ctor.prototype, 'srcset', { get: d.get, set(v) { d.set.call(this, toHubSrcset(v)); }, configurable: true });
   }
+  // Pictures a script sets as CSS backgrounds go through the hub too; the page's policy refuses a
+  // direct load from any other host, so without this a TV-style app shows blank tiles.
+  const routeCssUrls = (v) => String(v).replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/gi, (m, q, u) => (/^(data|blob):/i.test(u) ? m : `url(${q}${toHub(u)}${q})`));
+  for (const prop of ['backgroundImage', 'background', 'maskImage', 'listStyleImage']) {
+    const d = Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, prop);
+    if (d && d.set) Object.defineProperty(CSSStyleDeclaration.prototype, prop, { get: d.get, set(v) { d.set.call(this, routeCssUrls(v)); }, configurable: true });
+  }
+  const realSetProperty = CSSStyleDeclaration.prototype.setProperty;
+  CSSStyleDeclaration.prototype.setProperty = function (name, value, priority) { return realSetProperty.call(this, name, /url\(/i.test(String(value)) ? routeCssUrls(value) : value, priority); };
   const realSetAttribute = Element.prototype.setAttribute;
   Element.prototype.setAttribute = function (name, value) {
     const n = String(name).toLowerCase();
     if ((n === 'src' || n === 'href' || n === 'data-src' || n === 'poster') && /^(https?:)?\/\//i.test(String(value))) value = toHub(String(value));
     else if (n === 'srcset' || n === 'data-srcset') value = toHubSrcset(value);
+    else if (n === 'style' && /url\(/i.test(String(value))) value = routeCssUrls(value);
     return realSetAttribute.call(this, name, value);
   };
   const realGetAttribute = Element.prototype.getAttribute;
