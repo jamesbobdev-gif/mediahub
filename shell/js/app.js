@@ -291,9 +291,9 @@ function wirePortal() {
     }
   };
   portal.onCandidates = () => { if (state.viaHome === 'armed') scheduleGo(); if (state.view === 'portal' && !player.active) refreshFocus(); };
-  portal.onBlocked = () => {
+  portal.onBlocked = (why) => {
     if (state.view !== 'portal') return;
-    trace('blocked', { href: portal.href, src: portal.frame.src, missed: portal.missed, viaHome: state.viaHome, count: state.blockedRedirects });
+    trace('blocked', { href: portal.href, src: portal.frame.src, missed: portal.missed, watch: why, viaHome: state.viaHome, count: state.blockedRedirects });
     // Some sites throw out a title page opened directly (Tubi sends it to its 404 screen) but build
     // the same page fine when reached from their own front page. Go in that way once.
     if (state.autoplayPath && !state.viaHome) {

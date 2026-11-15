@@ -35,12 +35,17 @@ export class PortalFrame {
     this._hb = setInterval(() => {
       if (!this.frame.src || this.frame.src === 'about:blank') return;
       const now = performance.now();
-      if (this.watch.state(now) === 'dead') { this.watch.load(now); this.ready = false; this.onBlocked(); return; }
+      if (this.watch.state(now) === 'dead') { const why = this.watchInfo(); this.watch.load(now); this.ready = false; this.onBlocked(why); return; }
       this.send({ type: 'hub:ping', n: Date.now() });
     }, 1000);
   }
   /** Seconds since the page last said anything (for the stats). */
   get missed() { return Math.round(this.watch.silence(performance.now())); }
+  /** The watch's timers as seconds ago, for the trace: which rule called the frame gone. */
+  watchInfo() {
+    const now = performance.now(), ago = (t) => (t == null ? null : Math.round((now - t) / 100) / 10);
+    return { load: ago(this.watch.loadAt), loaded: ago(this.watch.loadedAt), ready: ago(this.watch.readyAt), seen: ago(this.watch.lastSeen), v: 2 };
+  }
   stopHeartbeat() { clearInterval(this._hb); this._hb = null; }
 
   layout() {
