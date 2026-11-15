@@ -48,7 +48,16 @@ function setFocus(c, { scroll = true } = {}) {
   if (state.view !== 'portal') { c.el.classList.add('focused'); if (scroll) c.el.scrollIntoView({ block: 'nearest', inline: 'center' }); }
   else if (scroll) portal.send({ type: 'hub:anchor', id: c.id });
   drawRing(c);
+  if (state.view !== 'portal') settleRing();
   if (state.view === 'settings') settings.onFocus(c.el);
+}
+// The ring is drawn the moment the focus moves, but the tile keeps moving for a moment: it grows
+// and lifts over 140 ms, and on a TV stick a row can snap into place a frame or two later. Follow
+// it until it has settled, so the outline ends up around the tile and not where the tile was.
+let settleTimers = [];
+function settleRing() {
+  for (const t of settleTimers) clearTimeout(t);
+  settleTimers = [60, 160, 320, 600].map((ms) => setTimeout(() => { if (state.focus && state.view !== 'portal' && !ring.hidden) drawRing(state.focus); }, ms));
 }
 const focusEl = (el) => { const r = el.getBoundingClientRect(); setFocus({ el, x: r.left, y: r.top, w: r.width, h: r.height }); };
 function drawRing(c) {
@@ -554,6 +563,7 @@ async function boot() {
   views.search.addEventListener('scroll', followScroll, { passive: true, capture: true });
   views.settings.addEventListener('scroll', followScroll, { passive: true, capture: true });
   views.website.addEventListener('scroll', followScroll, { passive: true, capture: true });
+  for (const v of [views.home, views.search, views.settings, views.website]) v.addEventListener('transitionend', followScroll, { passive: true, capture: true });
   for (const v of [views.home, views.search, views.settings, views.website]) v.addEventListener('click', (e) => { const t = e.target.closest('[data-focusable]'); if (!t) return; focusEl(t); state.view === 'home' ? homeSelect() : state.view === 'search' ? searchSelect() : state.view === 'website' ? website.select(t) : settings.select(t); });
   window.__app = { state, catalog, portal, player, dispatch, progress, remote };
 }
