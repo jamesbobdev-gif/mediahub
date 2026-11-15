@@ -40,14 +40,23 @@ the artwork store were checked for leftovers.
 | Xumo Play, The Roku Channel and Plex give the finder nothing: they are drawn entirely by script with no feed, sitemap or public list | finder | Open question. They open as pages; no titles reach the home screen |
 | Posters still downloading when a source is removed land in the store afterwards and are never deleted (about 240 files after two passes) | artwork store | Open: a sweep of posters no title uses, at start-up |
 | Pluto TV shows "You may be using a VPN or proxy" from a PC on a VPN, with or without the hub | site | Not a hub fault; from the Pi it loads |
-| The play-at-once press did not start Coraline on the Fire TV, while the same flow plays on a PC | shell, injected script | Open: the TV now reports each step to `/api/trace`; the stick was asleep before it could be read |
+| The play-at-once press did not start Coraline on the Fire TV, while the same flow plays on a PC | shell, injected script | The play control sat below the fold and Tubi offered "Play in the App" to an Android browser: the control is scrolled to first and the page sees a desktop browser. Coraline plays at once on the stick; pause, seek and Back work; Continue watching shows the minutes left |
 | The Fire TV's Info button opens a system "pair your remote" dialog instead of the hub's stats | Fire TV | Open: the hub's stats need another key on that remote |
+| YouTube's TV page took the hub's synthetic clicks for nothing: a lean-back app wants real arrow keys | shell, injected script | A source rule `keys: page` forwards the remote's keys into the page and hides the hub's ring; the menu key returns to the hub. Watch as guest and the sidebar work on the stick |
+| Tiles on YouTube's TV page were blank: a script sets their pictures as CSS backgrounds, which the page's policy refuses from another host | injected script | Pictures set as CSS backgrounds by script go through the hub too |
+| Pluto's title page put the ring around the whole page: its hero is one link the size of the screen, and nothing counts as above or below it, so the arrows only scrolled | injected script | A link or button the size of the screen is a backdrop, not a control |
+| On the hub's home screen the outline did not line up with the tile after a move: the tile grows and lifts for 140 ms after the ring is drawn, and the stick snaps the row into place a frame later | shell | The ring follows the tile until it has settled |
+| Pluto's "Play Now" reaches its player, which stays at "Advertisement is loading" on the stick (screen black, no sound, the page stops answering) and on a PC through the hub. Its StreamingUrl call answers with a relative stitcher path and no URL; the player logs that it has no asset URL | site, proxy | Open. Allowing its consent manager (ketchcdn, ketchjs, paramount) and ad SDK (imasdk) hosts changed nothing; those stay allowed for Pluto |
+| Keys sent over ADB reach the stick late or not at all while a page is busy; a press can land seconds later, on a different screen | test method | The hub's control channel (`POST /api/tv/<id>/command`, docs/CONTROL.md) is the reliable way to drive the stick from a script |
 
 ## Still to check on the TV itself
 
-- YouTube's TV page: whether the shell's focus and OK drive the lean-back app, which expects
-  arrow keys.
-- Each configured source, from its card and from a poster: open, play, pause, seek, Back to the
-  hub, with no bounce and no white screen.
+- Done on the stick: Tubi (Coraline from its poster: plays at once, pause, seek, Back), YouTube's
+  TV page (opens, keys drive it, no playback tried), Pluto (opens, title page, Play Now reaches a
+  player that does not start: see the table), the Settings screen (list, detail, Allow buttons and
+  the button row all reachable with the arrows; Open works).
+- Each remaining source, from its card and from a poster: PBS, Plex, the Internet Archive, Vimeo:
+  open, play, pause, seek, Back to the hub, with no bounce and no white screen.
+- A free video on YouTube's TV page: play, pause, seek.
 - Adding and removing a source from the Settings screen with the remote, as opposed to through
   the API the screen calls.
