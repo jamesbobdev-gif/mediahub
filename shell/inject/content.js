@@ -373,6 +373,9 @@
   function visible(el, r) {
     if (!r.width || !r.height) return false;
     if (r.bottom < -200 || r.top > innerHeight + 200) return false;
+    // A link or button the size of the screen is a backdrop (a title page's hero), not a control:
+    // with the ring on it nothing counts as above or below, and the arrows only scroll.
+    if (el.tagName !== 'VIDEO' && r.width >= innerWidth * 0.9 && r.height >= innerHeight * 0.6) return false;
     const cs = getComputedStyle(el);
     return cs.visibility !== 'hidden' && cs.display !== 'none' && cs.pointerEvents !== 'none';
   }

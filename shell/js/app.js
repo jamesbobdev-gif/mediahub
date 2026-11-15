@@ -80,7 +80,12 @@ function move(dir) {
   const cur = refind(cands, state.focus) || state.focus;
   const next = pickNext(cur, cands, dir);
   if (next) setFocus(next);
-  else if (state.view === 'portal' && (dir === 'down' || dir === 'up')) portal.send({ type: 'hub:scrollBy', dy: dir === 'down' ? 300 : -300 });
+  else if (state.view === 'portal') {
+    // Nothing that way: say what the page offered, so a page the ring cannot move on can be read in the trace.
+    const box = (c) => (c ? [c.id, c.tag, Math.round(c.x), Math.round(c.y), Math.round(c.w), Math.round(c.h)].filter((v) => v !== undefined) : null);
+    trace('nomove', { dir, href: portal.href, focus: box(cur), stale: !refind(cands, state.focus), cands: cands.length, sample: cands.slice(0, 10).map(box) });
+    if (dir === 'down' || dir === 'up') portal.send({ type: 'hub:scrollBy', dy: dir === 'down' ? 300 : -300 });
+  }
   requestAnimationFrame(() => { state.metrics.focus.push(performance.now() - t0); if (state.metrics.focus.length > 200) state.metrics.focus.shift(); });
 }
 
