@@ -20,7 +20,7 @@ const state = {
   focus: null,             // home/search: {el,x,y,w,h}; portal: {id,x,y,w,h}
   sources: [], env: null,
   portalDepth: 0, goingBack: false, portalSource: null, goodUrls: [], blockedRedirects: 0,
-  playKey: null, playTitle: null, playItemId: null, autoplay: false, autoplayPath: null, viaHome: null,
+  playKey: null, playTitle: null, playItemId: null, autoplay: false, autoplayPath: null, autoplayFollow: null, viaHome: null,
   query: '', searchReturn: 'home',
   decisions: null, cache: null,
   metrics: { focus: [] },
@@ -269,7 +269,7 @@ const frontDoor = { list() { try { return JSON.parse(localStorage.getItem(FRONT_
 function openPortal(path, { key = null, title = null, itemId = null, autoplay = false } = {}) {
   if (state.view === 'settings' || state.view === 'website') state.searchReturn = state.view;
   state.playKey = key; state.playTitle = title; state.playItemId = itemId; state.autoplay = autoplay;
-  state.autoplayPath = autoplay ? path : null; state.viaHome = null;
+  state.autoplayPath = autoplay ? path : null; state.autoplayFollow = null; state.viaHome = null;
   state.portalDepth = 0; state.goingBack = false; state.goodUrls = [path]; state.blockedRedirects = 0;
   state.portalSource = (path.match(/^\/p\/([^/]+)/) || [])[1] || null;
   const src = (state.sources || []).find((s) => s.id === state.portalSource);
@@ -283,7 +283,12 @@ function openPortal(path, { key = null, title = null, itemId = null, autoplay = 
   say(state.viaHome ? `Opening ${title || 'it'} through ${src.name}...` : 'Loading portal…');
 }
 function wirePortal() {
-  portal.onTrace = (m) => trace('frame:' + (m.step || '?'), m.data || {});
+  portal.onTrace = (m) => {
+    trace('frame:' + (m.step || '?'), m.data || {});
+    // The page's play control was a link to another page (PBS: a show's "Watch Now" opens the
+    // episode page). Play there too, once, when that page comes up.
+    if (m.step === 'pressed' && m.data?.tag === 'A' && typeof m.data.href === 'string' && m.data.href.startsWith('/p/')) state.autoplayFollow = m.data.href.split('#')[0];
+  };
   portal.onReady = (m) => {
     if (state.view !== 'portal') return;
     trace('ready', { href: m.href, viaHome: state.viaHome, autoplay: state.autoplay, depth: state.portalDepth });
@@ -296,6 +301,12 @@ function wirePortal() {
     // Through the front door: the site's own page is up. Move to the title inside its app once the
     // page has gone quiet (an app still booting takes the nudge the wrong way), eight seconds at most.
     if (state.viaHome === 'loading') { state.viaHome = 'armed'; armGo(); return; }
+    if (state.autoplayFollow && m.href && m.href.split('#')[0] === state.autoplayFollow) {
+      state.autoplayFollow = null;
+      say(`Starting ${state.playTitle || 'playback'}...`);
+      setTimeout(startChosenTitle, 600);
+      return;
+    }
     // A title chosen on the home screen plays at once: the page presses its own play control and
     // hands the video over. Only the first page of the visit; a later page is the user's own doing.
     if (state.autoplay && state.portalDepth === 1) {
