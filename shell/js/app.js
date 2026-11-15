@@ -303,6 +303,7 @@ function wirePortal() {
       }
     }
     state.blockedRedirects++;
+    state.autoplay = false; state.autoplayPath = null;   // the page that bounced is not the chosen title any more
     say('Blocked a redirect to another site');
     // The page that escaped is not a good page to return to: drop it and go to the one before.
     if (state.goodUrls[state.goodUrls.length - 1] === portal.href) state.goodUrls.pop();

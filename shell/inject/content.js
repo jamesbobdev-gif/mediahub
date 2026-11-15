@@ -36,6 +36,13 @@
   };
 
   // ---- 1. Commit the portal to its desktop layout ------------------------------
+  // The page sees the browser the hub fetched it as (desktop Chrome, or a TV browser), not the
+  // TV's own: a site that reads "Android" offers its app instead of playing.
+  if (RULES.ua) {
+    for (const k of ['userAgent', 'appVersion']) { try { Object.defineProperty(navigator, k, { get: () => RULES.ua, configurable: true }); } catch {} }
+    try { Object.defineProperty(navigator, 'platform', { get: () => 'Linux x86_64', configurable: true }); } catch {}
+    try { Object.defineProperty(navigator, 'userAgentData', { get: () => undefined, configurable: true }); } catch {}
+  }
   if (!RULES.touch) {
     try { Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0, configurable: true }); } catch {}
     try { delete window.ontouchstart; } catch {}
@@ -170,7 +177,7 @@
         try { if (to && !/^(#|javascript:)/i.test(to) && new URL(to, location.href).pathname !== location.pathname) continue; } catch {}
       }
       const label = labelOf(el);
-      if (label.length > 30 || /trailer|preview|playlist|player/i.test(label)) continue;   // a tile's text, not a control
+      if (label.length > 30 || /trailer|preview|playlist|player|in the app|get the app|download|app store|google play|^play icon$/i.test(label)) continue;   // a tile's text, an app offer, not the control
       if (PLAY_WORDS.test(label)) return el;
       if (!hinted && !label && PLAY_HINT.test(`${el.className} ${el.id} ${el.getAttribute('data-testid') || ''}`)) hinted = el;
     }
@@ -182,7 +189,9 @@
     let pressed = null;
     tell('autoplay-start', { path: location.pathname, title: document.title.slice(0, 60), videos: queryAll('video').length });
     const ready = (v) => !!(v && (v.readyState > 0 || v.currentSrc || v.getAttribute('src') || v.querySelector('source')));
-    const largest = () => queryAll(RULES.player).concat(queryAll('video')).filter((v) => { const r = v.getBoundingClientRect(); return r.width > 0 && r.height > 0; }).sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect(); return rb.width * rb.height - ra.width * ra.height; })[0];
+    // The biggest video that is not a preview or trailer clip (a hero's teaser is not the film).
+    const isClip = (v) => /preview|trailer|promo|teaser/i.test(String(v.currentSrc || v.getAttribute('src') || ''));
+    const largest = () => { const vs = queryAll(RULES.player).concat(queryAll('video')).filter((v) => { const r = v.getBoundingClientRect(); return r.width > 0 && r.height > 0; }).sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect(); return rb.width * rb.height - ra.width * ra.height; }); return vs.find((v) => !isClip(v)) || (pressed ? vs[0] : undefined); };
     const step = () => {
       const btn = pressed ? null : findPlayControl();
       if (btn) {

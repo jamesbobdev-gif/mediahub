@@ -205,7 +205,7 @@ export function createProxy({ sources, filters, log = () => {}, cacheMb = DEFAUL
     });
     const head = [
       '<meta name="viewport" content="width=1280">',
-      `<script>window.__HUB_RULES=${JSON.stringify({ sourceId: source.id, ...rules })};window.__HUB_ORIGIN=${JSON.stringify(source.originUrl.origin)};window.__HUB_SHELL=${JSON.stringify(shellOrigin)};</script>`,
+      `<script>window.__HUB_RULES=${JSON.stringify({ sourceId: source.id, ua: userAgentFor(source), ...rules })};window.__HUB_ORIGIN=${JSON.stringify(source.originUrl.origin)};window.__HUB_SHELL=${JSON.stringify(shellOrigin)};</script>`,
       '<script src="/shell/inject/content.js"></script>',
       '<link rel="stylesheet" href="/shell/inject/content.css">',
       rules.css.length ? `<style id="hub-source-css">${rules.css.join(',\n')}{display:none !important}</style>` : '',

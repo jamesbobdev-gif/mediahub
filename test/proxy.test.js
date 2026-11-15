@@ -54,7 +54,7 @@ test('html rewrite injects viewport, rules, content script and rewrites urls', (
   const out = proxy.rewriteHtml('<html><head><meta name="viewport" content="width=device-width"><link href="style.css" rel="stylesheet"></head><body><a href="/app/x">x</a><img src="https://cdn.test/i.png"><div style="background:url(bg.png)"></div></body></html>', sources.get('demo'), 'https://portal.test/app/index.html');
   assert.match(out, /<meta name="viewport" content="width=1280">/);
   assert.equal((out.match(/name="viewport"/g) || []).length, 1);
-  assert.match(out, /window\.__HUB_RULES=\{"sourceId":"demo"/);
+  assert.match(out, /window\.__HUB_RULES=\{"sourceId":"demo","ua":"Mozilla/);
   assert.match(out, /src="\/shell\/inject\/content\.js"/);
   assert.match(out, /href="\/p\/demo\/style\.css"/);
   assert.match(out, /href="\/p\/demo\/x"/);
