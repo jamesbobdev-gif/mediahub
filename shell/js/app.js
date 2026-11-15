@@ -272,6 +272,7 @@ function openPortal(path, { key = null, title = null, itemId = null, autoplay = 
   state.autoplayPath = autoplay ? path : null; state.autoplayFollow = null; state.viaHome = null;
   state.portalDepth = 0; state.goingBack = false; state.goodUrls = [path]; state.blockedRedirects = 0;
   state.portalSource = (path.match(/^\/p\/([^/]+)/) || [])[1] || null;
+  player.state = { ...player.state, active: false }; osd.hidden = true;   // the last page's video is gone with it
   const src = (state.sources || []).find((s) => s.id === state.portalSource);
   // A dark source's frame is dark between pages too, so a navigation never flashes white.
   portal.frame.style.background = src?.rules?.dark ? '#0b0d12' : '#fff';
